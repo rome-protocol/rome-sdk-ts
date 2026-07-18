@@ -1,0 +1,59 @@
+{
+  "name": "@rome-protocol/sdk",
+  "version": "0.1.0",
+  "description": "Rome Protocol TypeScript SDK — submitRomeTx (the canonical Rome EVM write wrapper), fee/gas sizing, external-authority PDA + ATA derivation, and CPI calldata encoding for building on Rome (EVM chains that run on Solana).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "import": "./dist/bridge.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "node scripts/lint-public-surface.mjs",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "rome",
+    "solana",
+    "evm",
+    "cross-vm",
+    "sdk",
+    "submitRomeTx",
+    "cpi"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rome-protocol/rome-sdk-ts.git"
+  },
+  "homepage": "https://github.com/rome-protocol/rome-sdk-ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@solana/spl-token": "^0.4",
+    "@solana/web3.js": "^1",
+    "viem": "^2"
+  },
+  "devDependencies": {
+    "@solana/spl-token": "^0.4",
+    "@solana/web3.js": "^1",
+    "typescript": "^5",
+    "viem": "^2",
+    "vitest": "^3"
+  }
+}
