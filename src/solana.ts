@@ -28,9 +28,9 @@ import {
   type AccountMeta,
 } from "@solana/web3.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { keccak256, serializeTransaction, hexToBytes, type Hex } from "viem";
+import { keccak256, serializeTransaction, hexToBytes, encodeFunctionData, type Hex } from "viem";
 import { DO_TX_UNSIGNED_TAG, ACTIVATE_ATA_TAG } from "./constants.js";
-import { deriveAuthorityPda } from "./pda.js";
+import { deriveAuthorityPda, pubkeyToBytes32 } from "./pda.js";
 import { padRomeGas, buildRome1559Fees, DEFAULT_ROME_GAS_FALLBACK } from "./write.js";
 
 function pk(programId: PublicKey | string): PublicKey {
@@ -536,4 +536,69 @@ export async function submitSolanaInstructions(
   const err = await pollConfirmation(deps.connection, signature, lastValidBlockHeight);
   if (err) throw new Error(`fund-leg tx reverted: ${JSON.stringify(err)}`);
   return { signature };
+}
+
+// ---- Sweep leg (synthetic → wallet): value-OUT, the mirror of the fund leg ----
+
+/** HelperProgram precompile (`0xFF…09`) — home of `transfer_spl` (PDA-signed SPL move). */
+export const HELPER_PROGRAM = "0xff00000000000000000000000000000000000009" as Hex;
+const HELPER_TRANSFER_SPL_ABI = [
+  {
+    type: "function",
+    name: "transfer_spl",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to_ata", type: "bytes32" },
+      { name: "tokens", type: "uint64" },
+      { name: "mint", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export interface SweepLeg {
+  /** Idempotent create of the wallet's dest ATA (native ix; `transfer_spl` reverts without it). */
+  ensureWalletAtaIx: TransactionInstruction;
+  /** The `DoTxUnsigned` target — the HelperProgram precompile. */
+  helperTo: Hex;
+  /** `transfer_spl(walletAta, amount, mint)` calldata for the `DoTxUnsigned` call. */
+  calldata: Hex;
+  /** Source (synth ATA) + dest (wallet ATA) — append to the discovered accounts (both writable). */
+  extraAccounts: AccountMeta[];
+}
+
+/**
+ * SWEEP LEG (synthetic → wallet): after value lands in the synthetic (e.g. a
+ * withdraw / borrow / claim), push `amount` of `mint` back to the user's own
+ * wallet ATA via `HelperProgram.transfer_spl`, so the synthetic holds nothing at
+ * rest. Wire it as: submit `ensureWalletAtaIx` (native, via
+ * {@link submitSolanaInstructions}), then
+ * `submitRomeTxSolanaLane({ to: helperTo, data: calldata, extraAccounts })`.
+ */
+export function buildSweepLeg(params: {
+  programId: PublicKey | string;
+  mint: PublicKey;
+  amount: bigint;
+  wallet: PublicKey;
+  synthetic: Hex;
+  tokenProgram?: PublicKey;
+}): SweepLeg {
+  const programId = pk(params.programId);
+  const tokenProgram = params.tokenProgram ?? TOKEN_PROGRAM_ID;
+  const synthPda = deriveAuthorityPda(params.synthetic, programId);
+  const walletAta = getAssociatedTokenAddressSync(params.mint, params.wallet, true, tokenProgram);
+  const synthAta = getAssociatedTokenAddressSync(params.mint, synthPda, true, tokenProgram);
+  const ensureWalletAtaIx = createAssociatedTokenAccountIdempotentInstruction(
+    params.wallet, walletAta, params.wallet, params.mint, tokenProgram,
+  );
+  const calldata = encodeFunctionData({
+    abi: HELPER_TRANSFER_SPL_ABI,
+    functionName: "transfer_spl",
+    args: [pubkeyToBytes32(walletAta), params.amount, pubkeyToBytes32(params.mint)],
+  });
+  const extraAccounts: AccountMeta[] = [
+    { pubkey: walletAta, isSigner: false, isWritable: true }, // dest (wallet)
+    { pubkey: synthAta, isSigner: false, isWritable: true }, // source (synthetic)
+  ];
+  return { ensureWalletAtaIx, helperTo: HELPER_PROGRAM, calldata, extraAccounts };
 }

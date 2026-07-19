@@ -15,6 +15,7 @@ import {
   buildActivateAtaData,
   ownerInfoPda,
   buildFundLeg,
+  buildSweepLeg,
 } from "../src/solana.js";
 
 // A deterministic 32-byte Solana pubkey for tests (not the zero key).
@@ -183,5 +184,16 @@ describe("fund leg (transient-synthetic funding-in)", () => {
     expect(ixs).toHaveLength(2);
     expect(ixs[1].programId.equals(PROGRAM)).toBe(true); // ActivateAta → rome-evm program
     expect(ixs[1].data[0]).toBe(18);
+  });
+});
+
+describe("sweep leg (value-out)", () => {
+  it("buildSweepLeg → Helper precompile transfer_spl + 2 writable extraAccounts", () => {
+    const s = buildSweepLeg({ programId: PROGRAM, mint: PROGRAM, amount: 1_000_000n, wallet: PUBKEY, synthetic: syntheticAddress(PUBKEY) });
+    expect(s.helperTo.toLowerCase()).toBe("0xff00000000000000000000000000000000000009");
+    expect(s.calldata.startsWith("0x")).toBe(true);
+    expect(s.extraAccounts).toHaveLength(2);
+    expect(s.extraAccounts.every((a) => a.isWritable)).toBe(true);
+    expect(s.ensureWalletAtaIx.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"); // ATA program
   });
 });
