@@ -1,5 +1,7 @@
 # @rome-protocol/sdk
 
+> **Built on [Rome Protocol](https://docs.rome.builders)** — EVM chains that run natively inside the Solana runtime, where Solidity apps call Solana programs atomically (CPI) and Solana users drive EVM apps: two VMs, one chain, one block.
+
 TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM chains that run on Solana. It handles the Rome-specific write path, fee sizing, PDA derivation, and CPI calldata encoding so your app doesn't re-derive them.
 
 ## Install
