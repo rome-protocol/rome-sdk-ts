@@ -16,6 +16,7 @@ const EXACT = new Set([
   "github.com",
   "cdn.jsdelivr.net",
   "registry.npmjs.org",
+  "docs.rome.builders",
   "api.devnet.solana.com",
   "api.testnet.solana.com",
   "api.mainnet-beta.solana.com",
