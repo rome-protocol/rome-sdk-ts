@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { PublicKey } from "@solana/web3.js";
+import { PublicKey, type Connection } from "@solana/web3.js";
 import { ComputeBudgetProgram } from "@solana/web3.js";
-import { keccak256, parseTransaction, hexToBytes, type Hex } from "viem";
+import { keccak256, parseTransaction, hexToBytes, decodeFunctionData, type Hex } from "viem";
 import {
   syntheticAddress,
   buildUnsignedEip1559Rlp,
@@ -16,7 +16,12 @@ import {
   ownerInfoPda,
   buildFundLeg,
   buildSweepLeg,
+  buildCreatePdaCall,
+  isSyntheticProvisioned,
+  provisionSynthetic,
+  HELPER_PROGRAM,
 } from "../src/solana.js";
+import { SELECTORS } from "../src/selectors.js";
 
 // A deterministic 32-byte Solana pubkey for tests (not the zero key).
 const PUBKEY_BYTES = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
@@ -195,5 +200,43 @@ describe("sweep leg (value-out)", () => {
     expect(s.extraAccounts).toHaveLength(2);
     expect(s.extraAccounts.every((a) => a.isWritable)).toBe(true);
     expect(s.ensureWalletAtaIx.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"); // ATA program
+  });
+});
+
+describe("fresh-synthetic provisioning (create_pda)", () => {
+  it("buildCreatePdaCall targets the Helper precompile with create_pda(synthetic)", () => {
+    const synth = syntheticAddress(PUBKEY);
+    const call = buildCreatePdaCall(synth);
+    expect(call.to).toBe(HELPER_PROGRAM);
+    expect(call.data.startsWith(SELECTORS["create_pda(address)"])).toBe(true);
+    const decoded = decodeFunctionData({
+      abi: [{ type: "function", name: "create_pda", stateMutability: "nonpayable", inputs: [{ name: "user", type: "address" }], outputs: [] }],
+      data: call.data,
+    });
+    expect((decoded.args[0] as string).toLowerCase()).toBe(synth.toLowerCase());
+  });
+
+  it("isSyntheticProvisioned reflects whether the external-auth PDA exists on-chain", async () => {
+    const synth = syntheticAddress(PUBKEY);
+    const present = { getAccountInfo: async () => ({ data: new Uint8Array(1) }) } as unknown as Connection;
+    const absent = { getAccountInfo: async () => null } as unknown as Connection;
+    expect(await isSyntheticProvisioned(present, PROGRAM, synth)).toBe(true);
+    expect(await isSyntheticProvisioned(absent, PROGRAM, synth)).toBe(false);
+  });
+
+  it("provisionSynthetic short-circuits when already provisioned (submits no tx)", async () => {
+    const signTransaction = vi.fn();
+    const deps = {
+      connection: { getAccountInfo: async () => ({ data: new Uint8Array(1) }) },
+      proxyUrl: "https://proxy.example",
+      programId: PROGRAM,
+      chainId: CHAIN_ID,
+      payer: PUBKEY,
+      signTransaction,
+    } as unknown as Parameters<typeof provisionSynthetic>[0];
+    const res = await provisionSynthetic(deps);
+    expect(res.alreadyProvisioned).toBe(true);
+    expect(res.signature).toBeUndefined();
+    expect(signTransaction).not.toHaveBeenCalled();
   });
 });

@@ -392,10 +392,20 @@ export interface SolanaLaneDeps {
  */
 export async function submitRomeTxSolanaLane(
   deps: SolanaLaneDeps,
-  call: EvmCall & { nonce?: bigint; fee?: FeeFields; extraAccounts?: AccountMeta[] },
+  call: EvmCall & { nonce?: bigint; fee?: FeeFields; extraAccounts?: AccountMeta[]; autoProvision?: boolean },
 ): Promise<{ signature: string; from: Hex }> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const from = syntheticAddress(deps.payer);
+  // First use of a brand-new synthetic: create its external-auth PDA. It doesn't
+  // exist until `create_pda` runs, and value-moving calls (the sweep's
+  // `transfer_spl`, ERC20SPL `transferFrom`) are signed by that PDA — so they
+  // revert until it's provisioned. Opt out with `autoProvision: false` to run
+  // your own one-time Activate step (see `provisionSynthetic`).
+  const createCall = buildCreatePdaCall(from);
+  const isCreatePdaCall = call.to === createCall.to && call.data === createCall.data;
+  if (call.autoProvision !== false && !isCreatePdaCall && !(await isSyntheticProvisioned(deps.connection, deps.programId, from))) {
+    await submitRomeTxSolanaLane(deps, { ...createCall, autoProvision: false });
+  }
   const nonce =
     call.nonce ?? BigInt(await jsonRpc<Hex>(deps.proxyUrl, "eth_getTransactionCount", [from, "pending"], fetchImpl));
   const fee =
@@ -601,4 +611,57 @@ export function buildSweepLeg(params: {
     { pubkey: synthAta, isSigner: false, isWritable: true }, // source (synthetic)
   ];
   return { ensureWalletAtaIx, helperTo: HELPER_PROGRAM, calldata, extraAccounts };
+}
+
+// ------------------------------------------- fresh-synthetic provisioning ---
+// A Solana-native user's synthetic external-auth PDA is NOT lazy: it must be
+// created once (`create_pda`) before any value-moving call, because the sweep's
+// `transfer_spl` and ERC20SPL `transferFrom` are signed by that PDA.
+// `submitRomeTxSolanaLane` auto-provisions on first use; these are the explicit
+// primitives (e.g. for an app "Activate" step).
+
+const HELPER_CREATE_PDA_ABI = [
+  { type: "function", name: "create_pda", stateMutability: "nonpayable", inputs: [{ name: "user", type: "address" }], outputs: [] },
+] as const;
+
+/**
+ * The one-time provisioning call — `create_pda(synthetic)` on the HelperProgram
+ * (`0xFF…09`). Submit once (via {@link submitRomeTxSolanaLane}) before the
+ * synthetic's first value-moving write; gate on {@link isSyntheticProvisioned}.
+ */
+export function buildCreatePdaCall(synthetic: Hex): EvmCall {
+  return {
+    to: HELPER_PROGRAM,
+    data: encodeFunctionData({ abi: HELPER_CREATE_PDA_ABI, functionName: "create_pda", args: [synthetic] }),
+  };
+}
+
+/**
+ * Whether the synthetic's external-auth PDA already exists on-chain (i.e. it's
+ * been provisioned). One Solana-RPC account read.
+ */
+export async function isSyntheticProvisioned(
+  connection: Connection,
+  programId: PublicKey | string,
+  synthetic: Hex,
+): Promise<boolean> {
+  return (await connection.getAccountInfo(deriveAuthorityPda(synthetic, pk(programId)))) !== null;
+}
+
+/**
+ * Provision a fresh synthetic if needed: create its external-auth PDA via
+ * `create_pda`. Returns the signature if it created one, else
+ * `{ alreadyProvisioned: true }`. The explicit form of what
+ * {@link submitRomeTxSolanaLane}'s default `autoProvision` does — call it once
+ * for an app "Activate" step, then submit writes with `autoProvision: false`.
+ */
+export async function provisionSynthetic(
+  deps: SolanaLaneDeps,
+): Promise<{ signature?: string; alreadyProvisioned: boolean }> {
+  const synthetic = syntheticAddress(deps.payer);
+  if (await isSyntheticProvisioned(deps.connection, deps.programId, synthetic)) {
+    return { alreadyProvisioned: true };
+  }
+  const { signature } = await submitRomeTxSolanaLane(deps, { ...buildCreatePdaCall(synthetic), autoProvision: false });
+  return { signature, alreadyProvisioned: false };
 }
