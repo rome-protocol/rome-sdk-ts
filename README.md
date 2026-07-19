@@ -2,7 +2,7 @@
 
 > **Built on [Rome Protocol](https://docs.rome.builders)** — EVM chains that run natively inside the Solana runtime, where Solidity apps call Solana programs atomically (CPI) and Solana users drive EVM apps: two VMs, one chain, one block.
 
-TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM chains that run on Solana. It handles the Rome-specific write path, fee sizing, PDA derivation, and CPI calldata encoding so your app doesn't re-derive them.
+TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM chains that run on Solana. It handles the Rome-specific write path, fee sizing, PDA derivation, CPI calldata encoding, and the **Solana lane** (a Solana wallet driving your EVM app) so your app doesn't re-derive them.
 
 ## Install
 
@@ -39,6 +39,29 @@ await submitRomeTx(provider, { from, to: CPI_PRECOMPILE, data });
 
 The CPI precompile signs as your **external-authority PDA** — `deriveAuthorityPda(evmAddress, romeEvmProgramId)` — and `deriveUserAta(evmAddress, mint, programId)` is that PDA's ATA (where bridged/wrapped tokens live).
 
+## Driving your EVM app from a Solana wallet (the Solana lane)
+
+A Solana wallet (Phantom) can call your EVM contracts directly — no Ethereum key. `submitRomeTxSolanaLane` is the mirror of `submitRomeTx`:
+
+```ts
+import { submitRomeTxSolanaLane, syntheticAddress } from "@rome-protocol/sdk";
+import { encodeFunctionData } from "viem";
+
+const { signature } = await submitRomeTxSolanaLane(
+  { connection, proxyUrl, programId, chainId, payer: wallet.publicKey, signTransaction: wallet.signTransaction },
+  { to: contract, data: encodeFunctionData({ abi, functionName: "deposit" }), value: amount },
+);
+```
+
+The wallet **signs the Solana transaction and sends it to the Solana RPC** (the proxy is used only for account emulation). On-chain, `msg.sender` is the wallet's **synthetic address** — `syntheticAddress(pubkey)` = `keccak256(pubkey)[12:]`.
+
+**The synthetic holds nothing at rest** — a Solana user's money lives in their wallet (as SPL USDC), and value flows *through* the synthetic. So bracket a lane write with:
+
+- **Fund leg** (value in) — `buildFundLeg(...)` + `submitSolanaInstructions(...)`: move USDC from the wallet into the synthetic (`ActivateAta`) before the call.
+- **Sweep leg** (value out) — `buildSweepLeg(...)`: push USDC from the synthetic back to the wallet (`HelperProgram.transfer_spl`) after a withdraw.
+
+`submitRomeTxSolanaLane` also handles what a hand-built transaction gets wrong: the **ComputeBudget** (raised CU + heap), the **treasure wallet** account, and emulating account discovery **with `value`** (so value-dependent storage slots are allocated). The user needs a little **SOL** (tx fee) + **USDC** (SPL) in their wallet; there is no faucet. Full walkthrough: **Build a dual-lane app** in the [docs](https://docs.rome.builders).
+
 ## Bridging (`@rome-protocol/sdk/bridge`)
 
 ```ts
@@ -65,6 +88,9 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `deriveAuthorityPda` / `deriveAta` / `deriveUserAta` / `pubkeyToBytes32` | PDA + ATA derivation |
 | `encodeInvoke` / `encodeInvokeSigned` / `CPI_PRECOMPILE` | CPI calldata encoders |
 | `u64Le` / `u8` | little-endian primitives for inner Solana instruction data |
+| `submitRomeTxSolanaLane(deps, call)` | the Solana lane — a Solana wallet drives your EVM contract |
+| `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit |
+| `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
 | `PRECOMPILE_ADDRESSES` / `CPI_ABI` / `HELPER_ABI` / `WITHDRAW_ABI` / `SYSTEM_ABI` / `SELECTORS` / `EXTERNAL_AUTHORITY_SEED` | precompile addresses, ABIs, and verified selectors |
 
 Precompile addresses, ABIs, and verified selectors are exported directly (each selector is checked against `keccak256(sig)` in CI). Solidity interfaces live in the public [`rome-solidity`](https://github.com/rome-protocol/rome-solidity) repo.

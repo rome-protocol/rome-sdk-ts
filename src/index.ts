@@ -8,6 +8,11 @@
  * - precompile bindings — addresses, ABIs, verified selectors, and constants for
  *   the Rome precompiles (CPI 0xFF..08, Helper 0xFF..09, Withdraw 0x42..16, …).
  *
+ * - `solana` — the SOLANA LANE: `submitRomeTxSolanaLane`, the mirror of
+ *   `submitRomeTx` — a Solana wallet drives an EVM contract on Rome (synthetic
+ *   address + `DoTxUnsigned`), with account discovery, ComputeBudget, and the
+ *   treasure wallet handled for you.
+ *
  * The bridge client is a separate entry point: `@rome-protocol/sdk/bridge`.
  * Solidity interfaces live in the public `rome-solidity` repo.
  */
@@ -18,3 +23,4 @@ export * from "./addresses.js";
 export * from "./abis.js";
 export * from "./selectors.js";
 export * from "./constants.js";
+export * from "./solana.js";
