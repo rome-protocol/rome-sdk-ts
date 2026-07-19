@@ -9,7 +9,7 @@ TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM 
 Repo-first — install from the repo, pinned to a release tag (npm publish is deferred until demand):
 
 ```
-npm install github:rome-protocol/rome-sdk-ts#v0.2.0 viem @solana/web3.js @solana/spl-token
+npm install github:rome-protocol/rome-sdk-ts#v0.2.1 viem @solana/web3.js @solana/spl-token
 ```
 
 Imports use the package name (`@rome-protocol/sdk`) unchanged.
@@ -55,10 +55,12 @@ const { signature } = await submitRomeTxSolanaLane(
 
 The wallet **signs the Solana transaction and sends it to the Solana RPC** (the proxy is used only for account emulation). On-chain, `msg.sender` is the wallet's **synthetic address** — `syntheticAddress(pubkey)` = `keccak256(pubkey)[12:]`.
 
-**The synthetic holds nothing at rest** — a Solana user's money lives in their wallet (as SPL USDC), and value flows *through* the synthetic. So bracket a lane write with:
+**The synthetic holds nothing at rest.** A Solana user's spendable balance is their **wallet's SPL ATA, exposed 1:1 as an ERC20SPL wrapper** on the EVM side (e.g. `wUSDC`) — so your app moves it with ordinary ERC20 `transfer` / `transferFrom`, *not* native `msg.value`. Value flows *through* the synthetic:
 
-- **Fund leg** (value in) — `buildFundLeg(...)` + `submitSolanaInstructions(...)`: move USDC from the wallet into the synthetic (`ActivateAta`) before the call.
-- **Sweep leg** (value out) — `buildSweepLeg(...)`: push USDC from the synthetic back to the wallet (`HelperProgram.transfer_spl`) after a withdraw.
+- **Fund leg** (value in) — `buildFundLeg(...)` + `submitSolanaInstructions(...)`: move USDC from the wallet into the synthetic's ATA (`ActivateAta`) before the call.
+- **Sweep leg** (value out) — `buildSweepLeg(...)`: push USDC from the synthetic's ATA back to the wallet (`HelperProgram.transfer_spl`) after a withdraw.
+
+**Provisioning is automatic.** A brand-new synthetic's external-auth PDA doesn't exist until `create_pda` runs — and value-moving calls are signed by it. `submitRomeTxSolanaLane` provisions it transparently on first use; pass `autoProvision: false` and call `provisionSynthetic(deps)` yourself for an explicit one-time "Activate" step (gate a UI with `isSyntheticProvisioned`).
 
 `submitRomeTxSolanaLane` also handles what a hand-built transaction gets wrong: the **ComputeBudget** (raised CU + heap), the **treasure wallet** account, and emulating account discovery **with `value`** (so value-dependent storage slots are allocated). The user needs a little **SOL** (tx fee) + **USDC** (SPL) in their wallet; there is no faucet. Full walkthrough: **Build a dual-lane app** in the [docs](https://docs.rome.builders).
 
@@ -90,6 +92,7 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `u64Le` / `u8` | little-endian primitives for inner Solana instruction data |
 | `submitRomeTxSolanaLane(deps, call)` | the Solana lane — a Solana wallet drives your EVM contract |
 | `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit |
+| `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
 | `PRECOMPILE_ADDRESSES` / `CPI_ABI` / `HELPER_ABI` / `WITHDRAW_ABI` / `SYSTEM_ABI` / `SELECTORS` / `EXTERNAL_AUTHORITY_SEED` | precompile addresses, ABIs, and verified selectors |
 
