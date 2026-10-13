@@ -16,7 +16,7 @@
  * `submitRomeTxSolanaLane` (`./solana.ts`) is the older legacy-transaction path.
  * The one-time `create_pda` step is still `provisionSynthetic` from that module.
  */
-import { Keypair, PublicKey, type Connection } from "@solana/web3.js";
+import { Keypair, PublicKey, type Connection, type TransactionInstruction } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import { base58 } from "@scure/base";
 import { bytesToHex, concatHex, fromRlp, hexToBytes, keccak256, type Hex } from "viem";
@@ -28,6 +28,7 @@ import {
   type FeeFields,
 } from "./solana.js";
 import { jsonRpc } from "./jsonRpc.js";
+import { compileV1Message } from "./v1Message.js";
 
 // ------------------------------------------------------------ authorization ---
 /** The text a wallet shows for the authorization signature, up to the hash. */
@@ -534,9 +535,14 @@ function checkAuthorization(data: Uint8Array, payer: PublicKey, hash: Uint8Array
  * transaction, and the chain validates it anyway.
  */
 async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array, expected: Expected): Promise<string> {
-  const { connection } = deps;
   const { message } = splitV1Wire(wire);
   checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected);
+  const txSig = await signChecked(signer, wire, message);
+  return broadcastAndConfirm(deps.connection, packSignedV1Wire(message, txSig), txSig, deps.confirmTimeoutMs, deps.fetchImpl ?? fetch);
+}
+
+/** Ask the wallet to sign a v1 wire and check the answer is a 64-byte signature over `message` by the payer. */
+async function signChecked(signer: LaneSigner, wire: Uint8Array, message: Uint8Array): Promise<Uint8Array> {
   const txSig = await signer.signV1Wire(wire);
   if (!(txSig instanceof Uint8Array) || txSig.length !== SIGNATURE_BYTES) {
     throw new Error(
@@ -547,7 +553,17 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
   if (!ed25519.verify(txSig, message, signer.payer.toBytes())) {
     throw new Error("the wallet signed a different transaction than the one composed");
   }
-  const signed = packSignedV1Wire(message, txSig);
+  return txSig;
+}
+
+/** Send a signed v1 wire without preflight and poll until it is confirmed; throws with the signature on failure or timeout. */
+async function broadcastAndConfirm(
+  connection: Connection,
+  signed: Uint8Array,
+  txSig: Uint8Array,
+  confirmTimeoutMs = 90_000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
   // The signature is known before the send; if the send fails the node may still have taken the transaction, so the caller needs it to look.
   const expectedSignature = base58.encode(txSig);
   let signature: string;
@@ -557,14 +573,13 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
     throw new Error(`Solana transaction ${expectedSignature} may not have been sent: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const confirmTimeoutMs = deps.confirmTimeoutMs ?? 90_000;
   const deadline = Date.now() + confirmTimeoutMs;
   let lastPollError: unknown;
   for (;;) {
     try {
       const status = (await connection.getSignatureStatuses([signature])).value[0];
       if (status?.err) {
-        const logs = await txLogs(connection, signature, deps.fetchImpl ?? fetch);
+        const logs = await txLogs(connection, signature, fetchImpl);
         throw new TxFailed(`Solana transaction ${signature} failed: ${JSON.stringify(status.err)}${logs ? `\n${logs}` : ""}`);
       }
       if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
@@ -579,6 +594,31 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
     }
     await sleep(Math.min(1000, Math.max(deadline - Date.now(), 1)));
   }
+}
+
+/**
+ * Send plain Solana instructions (the fund leg, a token-account creation) as one
+ * v1 transaction signed by `signer`, with no proxy involved. Prefer this over
+ * the legacy {@link submitSolanaInstructions}. The instructions may not carry a
+ * ComputeBudget instruction or a signer other than the payer; pass
+ * `computeUnitLimit` for the limit (left out, it is 200_000 per instruction, capped at 1_400_000). The wallet's signature is checked against the
+ * compiled message before anything is broadcast.
+ */
+export async function submitSolanaInstructionsV1(
+  instructions: TransactionInstruction[],
+  deps: { connection: Connection; signer: SignerLike; computeUnitLimit?: number; confirmTimeoutMs?: number; fetchImpl?: typeof fetch },
+): Promise<{ signature: string }> {
+  const signer = toLaneSigner(deps.signer);
+  const { blockhash } = await deps.connection.getLatestBlockhash();
+  const message = compileV1Message({
+    payer: signer.payer,
+    instructions,
+    recentBlockhash: blockhash,
+    ...(deps.computeUnitLimit === undefined ? {} : { computeUnitLimit: deps.computeUnitLimit }),
+  });
+  const txSig = await signChecked(signer, packSignedV1Wire(message, new Uint8Array(SIGNATURE_BYTES)), message);
+  const signature = await broadcastAndConfirm(deps.connection, packSignedV1Wire(message, txSig), txSig, deps.confirmTimeoutMs, deps.fetchImpl ?? fetch);
+  return { signature };
 }
 
 class TxFailed extends Error {}

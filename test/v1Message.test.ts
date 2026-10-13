@@ -1,0 +1,261 @@
+import { describe, it, expect, vi } from "vitest";
+import { ed25519 } from "@noble/curves/ed25519";
+import { ComputeBudgetProgram, type Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { base58 } from "@scure/base";
+import { compileV1Message } from "../src/v1Message.js";
+import { parseV1Message, splitV1Wire, submitSolanaInstructionsV1, type LaneSigner, type ParsedV1Message } from "../src/solanaV1.js";
+import { buildActivateAtaInstruction } from "../src/solana.js";
+
+const key = (n: number) => Keypair.fromSeed(Uint8Array.from({ length: 32 }, () => n)).publicKey;
+const payer = key(1);
+const MINT = key(2);
+const PROGRAM = key(3);
+const BLOCKHASH = base58.encode(Uint8Array.from({ length: 32 }, (_, i) => 200 - i));
+
+type Meta = { pubkey: string; isSigner: boolean; isWritable: boolean };
+type Decoded = { programId: string; keys: Meta[]; data: string };
+
+/** Read instruction `i` of a parsed message back as program id, account metas and data. */
+function metasForInstruction(parsed: ParsedV1Message, i: number): Decoded {
+  const { numRequiredSignatures: signers, numReadonlySignedAccounts: roSigned, numReadonlyUnsignedAccounts: roUnsigned } = parsed.header;
+  const total = parsed.accountKeys.length;
+  const ix = parsed.instructions[i]!;
+  return {
+    programId: parsed.accountKeys[ix.programIdIndex]!.toBase58(),
+    keys: ix.accountIndices.map((idx) => ({
+      pubkey: parsed.accountKeys[idx]!.toBase58(),
+      isSigner: idx < signers,
+      isWritable: idx < signers ? idx < signers - roSigned : idx < total - roUnsigned,
+    })),
+    data: Buffer.from(ix.data).toString("hex"),
+  };
+}
+const decode = (ix: TransactionInstruction): Decoded => ({
+  programId: ix.programId.toBase58(),
+  keys: ix.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable })),
+  data: Buffer.from(ix.data).toString("hex"),
+});
+const ix = (programId: PublicKey, keys: { pubkey: PublicKey; isSigner?: boolean; isWritable?: boolean }[], data = Buffer.alloc(0)) =>
+  new TransactionInstruction({
+    programId,
+    keys: keys.map((k) => ({ pubkey: k.pubkey, isSigner: k.isSigner ?? false, isWritable: k.isWritable ?? false })),
+    data,
+  });
+const compile = (instructions: TransactionInstruction[], extra: { computeUnitLimit?: number } = {}) =>
+  compileV1Message({ payer, instructions, recentBlockhash: BLOCKHASH, ...extra });
+
+describe("compileV1Message", () => {
+  it("round-trips a transfer, an idempotent ATA create and an ActivateAta through parseV1Message", () => {
+    const dest = key(4);
+    const walletAta = getAssociatedTokenAddressSync(MINT, payer, true);
+    const destAta = getAssociatedTokenAddressSync(MINT, dest, true);
+    const ixs = [
+      SystemProgram.transfer({ fromPubkey: payer, toPubkey: dest, lamports: 1234n }),
+      createAssociatedTokenAccountIdempotentInstruction(payer, destAta, dest, MINT),
+      buildActivateAtaInstruction({ programId: PROGRAM, chainId: 200010, mint: MINT, tokens: 5_000_000n, signer: payer, fromAta: walletAta, toAta: destAta }),
+    ];
+    const parsed = parseV1Message(compile(ixs));
+
+    expect(parsed.accountKeys[0]!.equals(payer)).toBe(true);
+    expect(parsed.instructions).toHaveLength(3);
+    // A v1 message flags each key once, so an instruction reads back with the flags OR-ed across all of them.
+    const merged = new Map<string, { isSigner: boolean; isWritable: boolean }>();
+    for (const m of ixs.flatMap((x) => decode(x).keys)) {
+      const seen = merged.get(m.pubkey);
+      merged.set(m.pubkey, { isSigner: !!seen?.isSigner || m.isSigner, isWritable: !!seen?.isWritable || m.isWritable });
+    }
+    ixs.forEach((original, i) => {
+      const want = decode(original);
+      expect(metasForInstruction(parsed, i)).toEqual({ ...want, keys: want.keys.map((k) => ({ ...k, ...merged.get(k.pubkey)! })) });
+    });
+    expect(merged.get(dest.toBase58())).toMatchObject({ isWritable: true }); // writable in the transfer, read-only in the ATA create
+    expect(parsed.header.numRequiredSignatures).toBe(1);
+    expect(parsed.header.numReadonlySignedAccounts).toBe(0);
+    // writable: payer, dest, destAta, walletAta; read-only: system, mint, token, ATA program, owner-info PDA, the Rome program
+    expect(parsed.accountKeys).toHaveLength(10);
+    expect(parsed.header.numReadonlyUnsignedAccounts).toBe(6);
+    expect(parsed.computeUnitLimit).toBe(3 * 200_000); // defaulted: 200_000 per instruction
+    expect(parsed.priorityFeeMicroLamports).toBeUndefined();
+  });
+
+  it("writes the blockhash into the message", () => {
+    const message = compile([SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n })]);
+    expect(base58.encode(message.slice(8, 40))).toBe(BLOCKHASH);
+    expect(message[0]).toBe(0x81);
+  });
+
+  it("orders keys by class, first seen first, and counts the header", () => {
+    const a = key(10), b = key(11), c = key(12), d = key(13), e = key(14);
+    const message = compile([
+      ix(PROGRAM, [{ pubkey: a }, { pubkey: b, isWritable: true }, { pubkey: payer, isSigner: true, isWritable: true }]),
+      ix(PROGRAM, [{ pubkey: c, isWritable: true }, { pubkey: d }, { pubkey: e }]),
+    ]);
+    const parsed = parseV1Message(message);
+    // payer, writable non-signers (b, c), read-only non-signers (a, PROGRAM, d, e)
+    expect(parsed.accountKeys.map((k) => k.toBase58())).toEqual([payer, b, c, a, PROGRAM, d, e].map((k) => k.toBase58()));
+    expect(parsed.header).toEqual({ numRequiredSignatures: 1, numReadonlySignedAccounts: 0, numReadonlyUnsignedAccounts: 4 });
+  });
+
+  it("makes a key writable when any instruction needs it writable", () => {
+    const shared = key(20);
+    const parsed = parseV1Message(compile([
+      ix(PROGRAM, [{ pubkey: shared }]),
+      ix(PROGRAM, [{ pubkey: shared, isWritable: true }]),
+    ]));
+    expect(metasForInstruction(parsed, 0).keys[0]).toMatchObject({ pubkey: shared.toBase58(), isWritable: true });
+    expect(metasForInstruction(parsed, 1).keys[0]).toMatchObject({ pubkey: shared.toBase58(), isWritable: true });
+    expect(parsed.accountKeys).toHaveLength(3);
+  });
+
+  it("keeps a program id read-only, and honours a writable listing of it", () => {
+    const other = key(21);
+    const plain = parseV1Message(compile([ix(PROGRAM, [{ pubkey: other, isWritable: true }])]));
+    expect(plain.header.numReadonlyUnsignedAccounts).toBe(1);
+    expect(plain.accountKeys.at(-1)!.equals(PROGRAM)).toBe(true);
+
+    const alsoAccount = parseV1Message(compile([
+      ix(PROGRAM, [{ pubkey: other }]),
+      ix(other, [{ pubkey: PROGRAM, isWritable: true }]),
+    ]));
+    // PROGRAM is a program id in the first instruction and a writable account in the second; `other` is the reverse and stays read-only.
+    expect(alsoAccount.accountKeys.map((k) => k.toBase58())).toEqual([payer, PROGRAM, other].map((k) => k.toBase58()));
+    expect(alsoAccount.header.numReadonlyUnsignedAccounts).toBe(1);
+  });
+
+  /** The loaded-accounts size value: it follows the compute-unit limit, after the account keys. */
+  const loadedAccountsSize = (message: Uint8Array) =>
+    new DataView(message.buffer, message.byteOffset).getUint32(42 + 32 * message[41]! + 4, true);
+
+  it("always writes the compute-unit limit and the loaded-accounts size (mask 0b1100), defaulting both", () => {
+    const base = [SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n })];
+    const message = compile(base);
+    expect(new DataView(message.buffer, message.byteOffset).getUint32(4, true)).toBe(0b1100);
+    expect(parseV1Message(message).computeUnitLimit).toBe(200_000);
+    expect(loadedAccountsSize(message)).toBe(67_108_864);
+  });
+
+  it("uses a given compute-unit limit, and caps the default at 1_400_000", () => {
+    const transfer = SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n });
+    const given = compile([transfer], { computeUnitLimit: 300_000 });
+    expect(parseV1Message(given).computeUnitLimit).toBe(300_000);
+    expect(loadedAccountsSize(given)).toBe(67_108_864);
+    expect(parseV1Message(compile(Array.from({ length: 10 }, () => transfer))).computeUnitLimit).toBe(1_400_000);
+  });
+
+  describe("refusals", () => {
+    const transfer = SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n });
+
+    it("a second signer", () => {
+      const other = key(30);
+      expect(() => compile([transfer, ix(PROGRAM, [{ pubkey: other, isSigner: true }])])).toThrow(/one signer.*payer/i);
+    });
+
+    it("a ComputeBudget instruction, pointing at computeUnitLimit", () => {
+      expect(() => compile([ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), transfer])).toThrow(/computeUnitLimit/);
+    });
+
+    it("more than 64 account keys", () => {
+      const keys = Array.from({ length: 64 }, (_, i) => ({ pubkey: new PublicKey(Uint8Array.from({ length: 32 }, () => (i + 40) % 256)) }));
+      // payer + 64 accounts + the program id = 66
+      expect(() => compile([ix(PROGRAM, keys)])).toThrow(/66.*64/);
+      expect(() => compile([ix(PROGRAM, keys.slice(0, 62))])).not.toThrow(); // payer + 62 + program = 64
+    });
+
+    it("more than 64 instructions", () => {
+      expect(() => compile(Array.from({ length: 65 }, () => transfer))).toThrow(/65.*64/);
+      expect(() => compile(Array.from({ length: 64 }, () => transfer))).not.toThrow();
+    });
+
+    it("no instructions", () => {
+      expect(() => compile([])).toThrow(/no instructions/);
+    });
+
+    it("a compute-unit limit of 0", () => {
+      expect(() => compile([transfer], { computeUnitLimit: 0 })).toThrow(/computeUnitLimit/);
+    });
+
+    it("data longer than 65535 bytes", () => {
+      expect(() => compile([ix(PROGRAM, [], Buffer.alloc(65_536))])).toThrow(/65536.*65535/);
+    });
+
+    it("a wire over 4096 bytes", () => {
+      const big = [ix(PROGRAM, [], Buffer.alloc(4_000)), ix(PROGRAM, [], Buffer.alloc(200))];
+      expect(() => compile(big)).toThrow(/4[0-9]{3}.*4096/);
+      expect(() => compile([ix(PROGRAM, [], Buffer.alloc(3_900))])).not.toThrow();
+    });
+  });
+});
+
+describe("submitSolanaInstructionsV1", () => {
+  const kp = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, i) => i + 7));
+  const transfer = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: key(4), lamports: 99n });
+
+  const fakeConnection = () => {
+    const sent: { wire: Uint8Array; options: unknown }[] = [];
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1 })),
+      sendRawTransaction: vi.fn(async (wire: Uint8Array, options: unknown) => {
+        sent.push({ wire, options });
+        return base58.encode(wire.slice(-64));
+      }),
+      getSignatureStatuses: vi.fn(async () => ({ value: [{ confirmationStatus: "confirmed", err: null }] })),
+    };
+    return { connection: connection as unknown as Connection, mocks: connection, sent };
+  };
+
+  it("signs the compiled message, checks the signature, and sends message then signature without preflight", async () => {
+    const { connection, mocks, sent } = fakeConnection();
+    const { signature } = await submitSolanaInstructionsV1([transfer], { connection, signer: kp, computeUnitLimit: 50_000 });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.options).toEqual({ skipPreflight: true });
+    const wire = sent[0]!.wire;
+    const message = wire.slice(0, -64);
+    const parsed = parseV1Message(message);
+    expect(parsed.accountKeys[0]!.equals(kp.publicKey)).toBe(true);
+    expect(parsed.computeUnitLimit).toBe(50_000);
+    expect(base58.encode(message.slice(8, 40))).toBe(BLOCKHASH);
+    expect(ed25519.verify(wire.slice(-64), message, kp.publicKey.toBytes())).toBe(true);
+    expect(signature).toBe(base58.encode(wire.slice(-64)));
+    expect(mocks.getLatestBlockhash).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a signature over different bytes before anything is sent", async () => {
+    const { connection, mocks } = fakeConnection();
+    const signer: LaneSigner = {
+      payer: kp.publicKey,
+      signAuthHash: async () => new Uint8Array(64),
+      signV1Wire: async (wire) => ed25519.sign(splitV1Wire(wire).message.slice(1), kp.secretKey.slice(0, 32)),
+    };
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer })).rejects.toThrow(/different transaction/);
+    expect(mocks.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a signature of the wrong length before anything is sent", async () => {
+    const { connection, mocks } = fakeConnection();
+    const signer: LaneSigner = { payer: kp.publicKey, signAuthHash: async () => new Uint8Array(64), signV1Wire: async (wire) => wire };
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer })).rejects.toThrow(/64-byte signature/);
+    expect(mocks.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("uses the injected fetchImpl to read the failure logs", async () => {
+    const { connection, mocks } = fakeConnection();
+    mocks.getSignatureStatuses.mockResolvedValue({ value: [{ confirmationStatus: "confirmed", err: { InstructionError: [0, "Custom"] } }] });
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { meta: { logMessages: ["log line from the injected fetch"] } } })),
+    );
+    await expect(
+      submitSolanaInstructionsV1([transfer], { connection: { ...mocks, rpcEndpoint: "https://solana.example/" } as unknown as Connection, signer: kp, fetchImpl: fetchImpl as unknown as typeof fetch }),
+    ).rejects.toThrow(/log line from the injected fetch/);
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+
+  it("names the signature when the confirmation times out", async () => {
+    const { connection, mocks } = fakeConnection();
+    mocks.getSignatureStatuses.mockResolvedValue({ value: [null] });
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer: kp, confirmTimeoutMs: 20 })).rejects.toThrow(
+      /Solana transaction [1-9A-HJ-NP-Za-km-z]{80,90} not confirmed within 20 ms/,
+    );
+  });
+});
