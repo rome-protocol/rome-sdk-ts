@@ -346,6 +346,9 @@ export async function relayV1(
   deps: SolanaLaneV1Deps,
   call: V1Call & { authSig?: Uint8Array },
 ): Promise<SolanaLaneV1Result> {
+  if (call.authSig && (call.nonce === undefined || call.fee === undefined)) {
+    throw new Error("relayV1: authSig requires nonce and fee (the signature covers one payload)");
+  }
   const prepared = await prepare(deps, call);
   const authSig = call.authSig ?? (await prepared.signer.signAuthHash(ed25519AuthMessage(authHashFor(prepared.rlp))));
   return relayPrepared(deps, prepared, authSig);

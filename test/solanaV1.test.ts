@@ -394,6 +394,28 @@ describe("relayV1", () => {
   });
 });
 
+describe("relayV1 with a passed signature", () => {
+  it("refuses an authSig without a pinned nonce and fee, before any request", async () => {
+    const proxy = stubProxy({});
+    const deps = { connection: fakeConnection().asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp };
+    const msg = /relayV1: authSig requires nonce and fee \(the signature covers one payload\)/;
+    await expect(relayV1(deps, { to: TOKEN, authSig: new Uint8Array(64) })).rejects.toThrow(msg);
+    await expect(relayV1(deps, { to: TOKEN, nonce: 1n, authSig: new Uint8Array(64) })).rejects.toThrow(msg);
+    await expect(relayV1(deps, { to: TOKEN, fee: FEE, authSig: new Uint8Array(64) })).rejects.toThrow(msg);
+    expect(proxy.calls).toHaveLength(0);
+  });
+  it("accepts an authSig when nonce and fee are pinned", async () => {
+    const proxy = stubProxy({ rome_relayUnsignedV1: () => "0xfeed", eth_getTransactionReceipt: () => receipt });
+    const sig = new Uint8Array(64).fill(3);
+    const res = await relayV1(
+      { connection: fakeConnection().asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp },
+      { to: TOKEN, nonce: 0n, fee: FEE, authSig: sig },
+    );
+    expect(proxy.of("rome_relayUnsignedV1")[0]!.params[2]).toBe(base58.encode(sig));
+    expect(res.hash).toBe("0xfeed");
+  });
+});
+
 describe("fundSyntheticGas", () => {
   const composed = { recentBlockhash: fixture.recentBlockhash, transaction: fixture.transaction };
   it("refuses an amount that is not a multiple of 10^12 before any request", async () => {
