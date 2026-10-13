@@ -413,7 +413,7 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
   for (;;) {
     const status = (await connection.getSignatureStatuses([signature])).value[0];
     if (status?.err) {
-      const logs = await txLogs(connection, signature);
+      const logs = await txLogs(connection, signature, deps.fetchImpl ?? fetch);
       throw new Error(`Solana transaction failed: ${JSON.stringify(status.err)}${logs ? `\n${logs}` : ""}`);
     }
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
@@ -422,12 +422,21 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
   }
 }
 
-async function txLogs(connection: Connection, signature: string): Promise<string | null> {
+/**
+ * The transaction's log lines, or `null` on any failure. Read with a plain
+ * JSON-RPC call: web3.js 1.x's `getTransaction` rejects a v1 transaction.
+ */
+async function txLogs(connection: Connection, signature: string, fetchImpl: typeof fetch): Promise<string | null> {
   try {
-    const tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 1 });
+    const tx = await jsonRpc<{ meta?: { logMessages?: string[] | null } | null } | null>(
+      connection.rpcEndpoint,
+      "getTransaction",
+      [signature, { encoding: "base64", commitment: "confirmed", maxSupportedTransactionVersion: 1 }],
+      fetchImpl,
+    );
     return tx?.meta?.logMessages?.join("\n") ?? null;
   } catch {
-    return null; // web3.js 1.x may not decode a v1 transaction; the signature is in the error anyway
+    return null; // the signature is in the error anyway
   }
 }
 

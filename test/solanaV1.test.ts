@@ -25,6 +25,7 @@ import fixture from "./fixtures/composed-v1.json" with { type: "json" };
 afterEach(() => vi.unstubAllGlobals());
 
 const PROXY = "https://proxy.example/";
+const SOLANA_RPC = "https://solana.example/";
 const CHAIN_ID = 200010;
 const ROME_PROGRAM = new PublicKey("RPTWwELXAY4KC9ZPHhaxp7Sq1hHtU3HNEgLbSegCcWf");
 const TOKEN = "0x1111111111111111111111111111111111111111" as Hex;
@@ -39,10 +40,10 @@ const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 // ---- a stub proxy: each method maps to a handler returning a result or { error } ----
 type Handler = (params: unknown[]) => unknown;
 function stubProxy(handlers: Record<string, Handler>) {
-  const calls: { method: string; params: unknown[] }[] = [];
-  const fn = vi.fn(async (_url: unknown, init: { body: string }) => {
+  const calls: { method: string; params: unknown[]; url: string }[] = [];
+  const fn = vi.fn(async (url: unknown, init: { body: string }) => {
     const { method, params } = JSON.parse(init.body) as { method: string; params: unknown[] };
-    calls.push({ method, params });
+    calls.push({ method, params, url: String(url) });
     const h = handlers[method];
     const out = h ? h(params) : { error: { code: -32601, message: `no handler for ${method}` } };
     const isErr = typeof out === "object" && out !== null && "error" in out;
@@ -56,7 +57,7 @@ function fakeConnection(status: unknown = { err: null, confirmationStatus: "conf
   const conn = {
     sendRawTransaction: vi.fn(async (_raw: Uint8Array, _opts?: unknown) => "SOLSIG"),
     getSignatureStatuses: vi.fn(async () => ({ value: [status] })),
-    getTransaction: vi.fn(async () => ({ meta: { logMessages: ["Program log: boom"] } })),
+    rpcEndpoint: SOLANA_RPC,
   };
   return { conn, asConnection: conn as unknown as Connection };
 }
@@ -244,12 +245,26 @@ describe("submitRomeTxV1", () => {
     expect(conn.sendRawTransaction).not.toHaveBeenCalled();
   });
 
-  it("includes the tx logs when the Solana status carries an error", async () => {
+  it("includes the tx logs, read with a plain JSON-RPC getTransaction at the Solana endpoint", async () => {
     const { asConnection } = fakeConnection({ err: { InstructionError: [1, "Custom"] }, confirmationStatus: "confirmed" });
-    stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
+    const proxy = stubProxy({
+      rome_composeUnsignedAtomicV1: () => composed,
+      getTransaction: () => ({ meta: { logMessages: ["Program log: boom"] } }),
+    });
     await expect(
       submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp }, call),
     ).rejects.toThrow(/InstructionError[\s\S]*Program log: boom/);
+    const [get] = proxy.of("getTransaction");
+    expect(get!.url).toBe(SOLANA_RPC);
+    expect(get!.params).toEqual(["SOLSIG", { encoding: "base64", commitment: "confirmed", maxSupportedTransactionVersion: 1 }]);
+  });
+
+  it("still reports the Solana error when the log fetch fails", async () => {
+    const { asConnection } = fakeConnection({ err: { InstructionError: [1, "Custom"] }, confirmationStatus: "confirmed" });
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed }); // no getTransaction handler: answers an error
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp }, call),
+    ).rejects.toThrow(/InstructionError/);
   });
 
   it("refuses a signV1Wire result that is not exactly 64 bytes", async () => {
