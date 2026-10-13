@@ -543,6 +543,10 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
       "signV1Wire must return the 64-byte signature; with solana:signTransaction return signedTransaction.slice(-64)",
     );
   }
+  // A wallet that changed or re-serialized the transaction before signing yields a broadcast that can never land; say so now, not after the confirm timeout.
+  if (!ed25519.verify(txSig, message, signer.payer.toBytes())) {
+    throw new Error("the wallet signed a different transaction than the one composed");
+  }
   const signed = packSignedV1Wire(message, txSig);
   const signature = await connection.sendRawTransaction(signed, { skipPreflight: true });
 

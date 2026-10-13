@@ -35,7 +35,13 @@ import {
 import fixture from "./fixtures/composed-v1.json" with { type: "json" };
 import depositFixture from "./fixtures/composed-deposit-v1.json" with { type: "json" };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+// The live fixtures belong to a payer whose secret key we do not hold, so the wallet's signature over them cannot be real.
+const acceptAnySignature = () => vi.spyOn(ed25519, "verify").mockReturnValue(true);
 
 const PROXY = "https://proxy.example/";
 const SOLANA_RPC = "https://solana.example/";
@@ -308,6 +314,18 @@ describe("submitRomeTxV1", () => {
     expect(conn.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it("refuses a signature that is not over the message it checked, and sends nothing", async () => {
+    const real = toLaneSigner(kp);
+    // a valid signature, but over some other bytes (a wallet that changed the transaction first)
+    const signer: LaneSigner = { payer: real.payer, signAuthHash: real.signAuthHash, signV1Wire: async (w) => real.signV1Wire(Uint8Array.of(...w, 0)) };
+    const { conn, asConnection } = fakeConnection();
+    stubProxy({ rome_composeUnsignedAtomicV1: composeAtomicFor });
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, call),
+    ).rejects.toThrow(/the wallet signed a different transaction than the one composed/);
+    expect(conn.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it("keeps polling through a status error after the send, and still returns the signature", async () => {
     const { conn, asConnection } = fakeConnection();
     conn.getSignatureStatuses
@@ -538,6 +556,7 @@ describe("composed transaction check", () => {
   });
 
   it("accepts the live atomic fixture end to end", async () => {
+    acceptAnySignature();
     const payer = new PublicKey(fixture.payer);
     const fields = fromRlp(fixture.rlp as Hex, "hex") as string[];
     const signer: LaneSigner = {
@@ -689,6 +708,7 @@ describe("composed transaction check", () => {
     });
 
     it("accepts the live deposit fixture end to end", async () => {
+      acceptAnySignature();
       const payer = new PublicKey(depositFixture.payer);
       const signer: LaneSigner = { payer, signAuthHash: async () => new Uint8Array(64), signV1Wire: async () => new Uint8Array(64) };
       const { conn, asConnection } = fakeConnection();
