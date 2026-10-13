@@ -115,7 +115,7 @@ const ixs = buildFundLeg({ programId, chainId, mint, amount, wallet: keypair.pub
 const { signature } = await submitSolanaInstructionsV1(ixs, { connection, signer: keypair });
 ```
 
-The wallet is the only signer. A v1 message carries the compute-unit limit in its config rather than in a ComputeBudget instruction, so pass `computeUnitLimit` instead of adding one (a ComputeBudget instruction is refused). A message may hold up to 64 account keys and the signed transaction up to 4096 bytes; the SDK throws before signing if it would not fit. `compileV1Message` is the underlying compiler, the inverse of `parseV1Message`.
+The wallet is the only signer. A v1 message carries the compute-unit limit in its config rather than in a ComputeBudget instruction, so pass `computeUnitLimit` instead of adding one (a ComputeBudget instruction is refused). Left out, it is 200,000 per instruction, capped at 1,400,000; the v1 priority fee is a flat amount, so a generous limit costs nothing extra. Every message also carries a loaded-accounts data size of 64 MiB, because the cluster reads a missing value as 0 and would fail the transaction on the first account it loads. A message may hold up to 64 instructions, 64 account keys and the signed transaction up to 4096 bytes; the SDK throws before signing if it would not fit. `compileV1Message` is the underlying compiler, the inverse of `parseV1Message`.
 
 ## Bridging (`@rome-protocol/sdk/bridge`)
 

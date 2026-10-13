@@ -601,12 +601,12 @@ async function broadcastAndConfirm(
  * v1 transaction signed by `signer`, with no proxy involved. Prefer this over
  * the legacy {@link submitSolanaInstructions}. The instructions may not carry a
  * ComputeBudget instruction or a signer other than the payer; pass
- * `computeUnitLimit` for the limit. The wallet's signature is checked against the
+ * `computeUnitLimit` for the limit (left out, it is 200_000 per instruction, capped at 1_400_000). The wallet's signature is checked against the
  * compiled message before anything is broadcast.
  */
 export async function submitSolanaInstructionsV1(
   instructions: TransactionInstruction[],
-  deps: { connection: Connection; signer: SignerLike; computeUnitLimit?: number; confirmTimeoutMs?: number },
+  deps: { connection: Connection; signer: SignerLike; computeUnitLimit?: number; confirmTimeoutMs?: number; fetchImpl?: typeof fetch },
 ): Promise<{ signature: string }> {
   const signer = toLaneSigner(deps.signer);
   const { blockhash } = await deps.connection.getLatestBlockhash();
@@ -617,7 +617,7 @@ export async function submitSolanaInstructionsV1(
     ...(deps.computeUnitLimit === undefined ? {} : { computeUnitLimit: deps.computeUnitLimit }),
   });
   const txSig = await signChecked(signer, packSignedV1Wire(message, new Uint8Array(SIGNATURE_BYTES)), message);
-  const signature = await broadcastAndConfirm(deps.connection, packSignedV1Wire(message, txSig), txSig, deps.confirmTimeoutMs);
+  const signature = await broadcastAndConfirm(deps.connection, packSignedV1Wire(message, txSig), txSig, deps.confirmTimeoutMs, deps.fetchImpl ?? fetch);
   return { signature };
 }
 

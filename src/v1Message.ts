@@ -2,9 +2,14 @@ import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { base58 } from "@scure/base";
 
 export const MAX_V1_ACCOUNTS = 64;
-export const MAX_V1_INSTRUCTIONS = 255;
+export const MAX_V1_INSTRUCTIONS = 64;
 export const MAX_V1_DATA_BYTES = 65535;
 export const MAX_V1_WIRE_BYTES = 4096;
+/** The loaded-accounts data size written into every message: the cluster maximum (64 MiB). A missing value means 0, which fails on the first account loaded. */
+export const V1_LOADED_ACCOUNTS_DATA_SIZE = 67_108_864;
+/** Default compute-unit limit per instruction when the caller gives none; the message total is capped at {@link MAX_V1_COMPUTE_UNITS}. */
+export const V1_DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION = 200_000;
+export const MAX_V1_COMPUTE_UNITS = 1_400_000;
 
 const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111";
 
@@ -14,7 +19,7 @@ export interface CompileV1Params {
   instructions: TransactionInstruction[];
   /** Base58 blockhash from `getLatestBlockhash`. */
   recentBlockhash: string;
-  /** Compute-unit limit for the message config; leave out to use the cluster default. */
+  /** Compute-unit limit for the message config, 1 to 4294967295. Leave out for 200_000 per instruction, capped at 1_400_000; the config always carries one, because a missing value means 0 on chain. */
   computeUnitLimit?: number;
 }
 
@@ -32,17 +37,22 @@ interface KeyEntry {
  * payer, then writable signers, read-only signers, writable non-signers and
  * read-only non-signers, each in first-seen order (an instruction's accounts,
  * then its program id). Only the payer may sign. The compute-unit limit goes in
- * the message config, so ComputeBudget instructions are refused.
+ * the message config, so ComputeBudget instructions are refused. The config
+ * always carries a compute-unit limit and a loaded-accounts data size, since
+ * the cluster reads a missing value as 0.
  */
 export function compileV1Message(params: CompileV1Params): Uint8Array {
-  const { payer, instructions, computeUnitLimit } = params;
+  const { payer, instructions } = params;
   const blockhash = base58.decode(params.recentBlockhash);
   if (blockhash.length !== 32) throw new Error(`recentBlockhash must decode to 32 bytes, got ${blockhash.length}`);
+  if (instructions.length === 0) throw new Error("no instructions to send");
   if (instructions.length > MAX_V1_INSTRUCTIONS) {
     throw new Error(`${instructions.length} instructions; a v1 message carries at most ${MAX_V1_INSTRUCTIONS}`);
   }
-  if (computeUnitLimit !== undefined && !(Number.isInteger(computeUnitLimit) && computeUnitLimit >= 0 && computeUnitLimit <= 0xffffffff)) {
-    throw new Error(`computeUnitLimit must be a u32, got ${computeUnitLimit}`);
+  const computeUnitLimit =
+    params.computeUnitLimit ?? Math.min(instructions.length * V1_DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION, MAX_V1_COMPUTE_UNITS);
+  if (!(Number.isInteger(computeUnitLimit) && computeUnitLimit >= 1 && computeUnitLimit <= 0xffffffff)) {
+    throw new Error(`computeUnitLimit must be a u32 of at least 1, got ${computeUnitLimit}`);
   }
 
   const entries = new Map<string, KeyEntry>();
@@ -81,8 +91,9 @@ export function compileV1Message(params: CompileV1Params): Uint8Array {
   const keys = [all[0]!, ...writable, ...readOnly].map((e) => e.pubkey);
   const index = new Map(keys.map((k, i) => [k.toBase58(), i]));
 
-  const config = new Uint8Array(computeUnitLimit === undefined ? 0 : 4);
-  if (computeUnitLimit !== undefined) new DataView(config.buffer).setUint32(0, computeUnitLimit, true);
+  const config = new Uint8Array(8);
+  new DataView(config.buffer).setUint32(0, computeUnitLimit, true);
+  new DataView(config.buffer).setUint32(4, V1_LOADED_ACCOUNTS_DATA_SIZE, true);
   const headers = new Uint8Array(instructions.length * 4);
   const payloads: Uint8Array[] = [];
   instructions.forEach((ix, i) => {
@@ -94,7 +105,7 @@ export function compileV1Message(params: CompileV1Params): Uint8Array {
 
   const fixed = new Uint8Array(42);
   fixed.set([0x81, 1, 0, readOnly.length], 0);
-  new DataView(fixed.buffer).setUint32(4, computeUnitLimit === undefined ? 0 : 0b100, true);
+  new DataView(fixed.buffer).setUint32(4, 0b1100, true);
   fixed.set(blockhash, 8);
   fixed.set([instructions.length, keys.length], 40);
 

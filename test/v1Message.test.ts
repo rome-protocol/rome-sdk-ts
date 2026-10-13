@@ -75,7 +75,7 @@ describe("compileV1Message", () => {
     // writable: payer, dest, destAta, walletAta; read-only: system, mint, token, ATA program, owner-info PDA, the Rome program
     expect(parsed.accountKeys).toHaveLength(10);
     expect(parsed.header.numReadonlyUnsignedAccounts).toBe(6);
-    expect(parsed.computeUnitLimit).toBeUndefined();
+    expect(parsed.computeUnitLimit).toBe(3 * 200_000); // defaulted: 200_000 per instruction
     expect(parsed.priorityFeeMicroLamports).toBeUndefined();
   });
 
@@ -123,15 +123,24 @@ describe("compileV1Message", () => {
     expect(alsoAccount.header.numReadonlyUnsignedAccounts).toBe(1);
   });
 
-  it("sets config bit 2 and the value only when a compute-unit limit is given", () => {
-    const base = [SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n })];
-    const without = compile(base);
-    expect(new DataView(without.buffer, without.byteOffset).getUint32(4, true)).toBe(0);
+  /** The loaded-accounts size value: it follows the compute-unit limit, after the account keys. */
+  const loadedAccountsSize = (message: Uint8Array) =>
+    new DataView(message.buffer, message.byteOffset).getUint32(42 + 32 * message[41]! + 4, true);
 
-    const withLimit = compile(base, { computeUnitLimit: 300_000 });
-    expect(new DataView(withLimit.buffer, withLimit.byteOffset).getUint32(4, true)).toBe(0b100);
-    expect(withLimit.length).toBe(without.length + 4);
-    expect(parseV1Message(withLimit).computeUnitLimit).toBe(300_000);
+  it("always writes the compute-unit limit and the loaded-accounts size (mask 0b1100), defaulting both", () => {
+    const base = [SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n })];
+    const message = compile(base);
+    expect(new DataView(message.buffer, message.byteOffset).getUint32(4, true)).toBe(0b1100);
+    expect(parseV1Message(message).computeUnitLimit).toBe(200_000);
+    expect(loadedAccountsSize(message)).toBe(67_108_864);
+  });
+
+  it("uses a given compute-unit limit, and caps the default at 1_400_000", () => {
+    const transfer = SystemProgram.transfer({ fromPubkey: payer, toPubkey: key(4), lamports: 1n });
+    const given = compile([transfer], { computeUnitLimit: 300_000 });
+    expect(parseV1Message(given).computeUnitLimit).toBe(300_000);
+    expect(loadedAccountsSize(given)).toBe(67_108_864);
+    expect(parseV1Message(compile(Array.from({ length: 10 }, () => transfer))).computeUnitLimit).toBe(1_400_000);
   });
 
   describe("refusals", () => {
@@ -153,8 +162,17 @@ describe("compileV1Message", () => {
       expect(() => compile([ix(PROGRAM, keys.slice(0, 62))])).not.toThrow(); // payer + 62 + program = 64
     });
 
-    it("more than 255 instructions", () => {
-      expect(() => compile(Array.from({ length: 256 }, () => transfer))).toThrow(/256.*255/);
+    it("more than 64 instructions", () => {
+      expect(() => compile(Array.from({ length: 65 }, () => transfer))).toThrow(/65.*64/);
+      expect(() => compile(Array.from({ length: 64 }, () => transfer))).not.toThrow();
+    });
+
+    it("no instructions", () => {
+      expect(() => compile([])).toThrow(/no instructions/);
+    });
+
+    it("a compute-unit limit of 0", () => {
+      expect(() => compile([transfer], { computeUnitLimit: 0 })).toThrow(/computeUnitLimit/);
     });
 
     it("data longer than 65535 bytes", () => {
@@ -219,6 +237,18 @@ describe("submitSolanaInstructionsV1", () => {
     const signer: LaneSigner = { payer: kp.publicKey, signAuthHash: async () => new Uint8Array(64), signV1Wire: async (wire) => wire };
     await expect(submitSolanaInstructionsV1([transfer], { connection, signer })).rejects.toThrow(/64-byte signature/);
     expect(mocks.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("uses the injected fetchImpl to read the failure logs", async () => {
+    const { connection, mocks } = fakeConnection();
+    mocks.getSignatureStatuses.mockResolvedValue({ value: [{ confirmationStatus: "confirmed", err: { InstructionError: [0, "Custom"] } }] });
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { meta: { logMessages: ["log line from the injected fetch"] } } })),
+    );
+    await expect(
+      submitSolanaInstructionsV1([transfer], { connection: { ...mocks, rpcEndpoint: "https://solana.example/" } as unknown as Connection, signer: kp, fetchImpl: fetchImpl as unknown as typeof fetch }),
+    ).rejects.toThrow(/log line from the injected fetch/);
+    expect(fetchImpl).toHaveBeenCalled();
   });
 
   it("names the signature when the confirmation times out", async () => {
