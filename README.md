@@ -82,7 +82,7 @@ const { route, signature, hash, receipt } = await submitRomeTxV1(
 );
 ```
 
-The authorization message is plain text, so any wallet that offers `solana:signMessage` can sign it. The transaction signature is different: `signV1Wire` receives the raw v1 wire and must return an ed25519 signature over everything but the last 64 bytes (the empty signature slot). A signer that can sign raw bytes does that directly, as a `Keypair` does. Wallet code that first decodes the transaction with web3.js 1.x or `@solana/kit` may not recognise the v1 format, so check your wallet's `solana:signTransaction` against a v1 wire before relying on it:
+The authorization message is plain text, so any wallet that offers `solana:signMessage` can sign it. The transaction signature is different: `signV1Wire` receives the raw v1 wire and must return **only the 64-byte ed25519 signature** for its empty signature slot, which the SDK checks before it broadcasts. A `Keypair` does this directly. Wallet Standard's `solana:signTransaction` returns the whole signed wire, so slice the signature off its end. Wallet code that first decodes the transaction with web3.js 1.x or `@solana/kit` may not recognise the v1 format, so check your wallet's `solana:signTransaction` against a v1 wire before relying on it:
 
 ```ts
 const signer: LaneSigner = {
@@ -91,7 +91,10 @@ const signer: LaneSigner = {
     const [{ signature }] = await wallet.features["solana:signMessage"].signMessage({ account, message });
     return signature;
   },
-  signV1Wire: (wire) => signRawBytes(wire.slice(0, wire.length - 64)), // your raw-bytes ed25519 signer
+  signV1Wire: async (wire) => {
+    const [{ signedTransaction }] = await wallet.features["solana:signTransaction"].signTransaction({ account, transaction: wire });
+    return signedTransaction.slice(-64);
+  },
 };
 ```
 

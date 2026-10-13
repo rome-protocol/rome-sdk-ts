@@ -252,6 +252,17 @@ describe("submitRomeTxV1", () => {
     ).rejects.toThrow(/InstructionError[\s\S]*Program log: boom/);
   });
 
+  it("refuses a signV1Wire result that is not exactly 64 bytes", async () => {
+    const real = toLaneSigner(kp);
+    const signer: LaneSigner = { payer: real.payer, signAuthHash: real.signAuthHash, signV1Wire: async (w) => w }; // a whole signed wire
+    const { conn, asConnection } = fakeConnection();
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer }, call),
+    ).rejects.toThrow(/signV1Wire must return the 64-byte signature; with solana:signTransaction return signedTransaction\.slice\(-64\)/);
+    expect(conn.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
   it("throws when the Solana transaction never confirms", async () => {
     const { asConnection } = fakeConnection(null);
     stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
@@ -348,6 +359,16 @@ describe("fundSyntheticGas", () => {
       fundSyntheticGas({ connection: fakeConnection().asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp }, 10n ** 12n + 1n),
     ).rejects.toThrow(/10\^12/);
     expect(proxy.calls).toHaveLength(0);
+  });
+  it("refuses a signV1Wire result that is not exactly 64 bytes", async () => {
+    const real = toLaneSigner(kp);
+    const signer: LaneSigner = { payer: real.payer, signAuthHash: real.signAuthHash, signV1Wire: async () => new Uint8Array(65) };
+    const { conn, asConnection } = fakeConnection();
+    stubProxy({ rome_composeExternalDepositV1: () => composed });
+    await expect(
+      fundSyntheticGas({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer }, 10n ** 12n),
+    ).rejects.toThrow(/signV1Wire must return the 64-byte signature/);
+    expect(conn.sendRawTransaction).not.toHaveBeenCalled();
   });
   it("asks for a deposit in hex wei, signs and sends the returned wire", async () => {
     const signer = spySigner();

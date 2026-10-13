@@ -58,8 +58,9 @@ export interface LaneSigner {
   signAuthHash(message: Uint8Array): Promise<Uint8Array>;
   /**
    * Sign a v1 wire (the message followed by one zero signature slot) and return
-   * the signature for that slot. A Wallet Standard wallet does this with
-   * `solana:signTransaction` on the raw bytes.
+   * only the 64-byte signature for that slot, not the signed wire. A Wallet
+   * Standard wallet's `solana:signTransaction` returns the whole signed wire as
+   * `signedTransaction`, so return `signedTransaction.slice(-64)`.
    */
   signV1Wire(unsignedWire: Uint8Array): Promise<Uint8Array>;
 }
@@ -398,7 +399,13 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
   const { connection } = deps;
   const { message } = splitV1Wire(wire);
   parseV1Message(message);
-  const signed = packSignedV1Wire(message, await signer.signV1Wire(wire));
+  const txSig = await signer.signV1Wire(wire);
+  if (!(txSig instanceof Uint8Array) || txSig.length !== SIGNATURE_BYTES) {
+    throw new Error(
+      "signV1Wire must return the 64-byte signature; with solana:signTransaction return signedTransaction.slice(-64)",
+    );
+  }
+  const signed = packSignedV1Wire(message, txSig);
   const signature = await connection.sendRawTransaction(signed, { skipPreflight: true });
 
   const confirmTimeoutMs = deps.confirmTimeoutMs ?? 90_000;
