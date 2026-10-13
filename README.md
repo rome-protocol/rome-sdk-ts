@@ -131,7 +131,6 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from SOL / poll the EVM receipt |
 | `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
 | `composeAtomicV1` / `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 proxy call and wire helpers |
-| `jsonRpc(url, method, params, fetch)` | the JSON-RPC call the lanes use: returns `result`, throws on an error answer |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
 | `PRECOMPILE_ADDRESSES` / `CPI_ABI` / `HELPER_ABI` / `WITHDRAW_ABI` / `SYSTEM_ABI` / `SELECTORS` / `EXTERNAL_AUTHORITY_SEED` | precompile addresses, ABIs, and verified selectors |

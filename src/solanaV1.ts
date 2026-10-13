@@ -22,12 +22,12 @@ import { base58 } from "@scure/base";
 import { concatHex, keccak256, type Hex } from "viem";
 import {
   buildUnsignedEip1559Rlp,
-  jsonRpc,
   sizeSolanaLaneFee,
   syntheticAddress,
   type EvmCall,
   type FeeFields,
 } from "./solana.js";
+import { jsonRpc } from "./jsonRpc.js";
 
 // ------------------------------------------------------------ authorization ---
 /** The text a wallet shows for the authorization signature, up to the hash. */
