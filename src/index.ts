@@ -24,3 +24,4 @@ export * from "./abis.js";
 export * from "./selectors.js";
 export * from "./constants.js";
 export * from "./solana.js";
+export * from "./solanaV1.js";

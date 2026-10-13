@@ -239,7 +239,7 @@ export interface FeeFields {
   gasLimit: bigint;
 }
 
-async function jsonRpc<T>(rpcUrl: string, method: string, params: unknown[], fetchImpl: typeof fetch): Promise<T> {
+export async function jsonRpc<T>(rpcUrl: string, method: string, params: unknown[], fetchImpl: typeof fetch): Promise<T> {
   const res = await fetchImpl(rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
