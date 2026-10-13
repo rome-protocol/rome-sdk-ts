@@ -415,7 +415,11 @@ type Expected = { kind: "atomic"; rlp: Hex } | { kind: "deposit"; chainId: numbe
 const ED25519_PROGRAM = new PublicKey("Ed25519SigVerify111111111111111111111111111");
 const ED25519_OFFSETS_HEADER = 14;
 const SAME_INSTRUCTION = 0xffff;
-/** Rome EVM program: instruction tag, then 9 more zero bytes, then the transaction type byte. */
+/**
+ * Rome EVM program instruction data before the payload: the DoTx tag (0), no fee
+ * address (flag 0), a zero priority-fee reservation (u64), then the typed
+ * (0x02) payload. The zeros are why the prefix must match exactly.
+ */
 const ATOMIC_PREFIX = Uint8Array.of(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02);
 const DEPOSIT_TAG = 0x01;
 const DEPOSIT_TX_TYPE = 0x7e;
