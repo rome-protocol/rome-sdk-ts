@@ -29,3 +29,4 @@ export * from "./selectors.js";
 export * from "./constants.js";
 export * from "./solana.js";
 export * from "./solanaV1.js";
+export * from "./v1Message.js";
