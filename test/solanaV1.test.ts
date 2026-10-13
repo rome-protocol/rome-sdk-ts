@@ -95,6 +95,9 @@ function spySigner(): LaneSigner & { auth: ReturnType<typeof vi.fn>; wire: Retur
   return { payer: real.payer, signAuthHash: auth, signV1Wire: wire, auth, wire };
 }
 
+// What an honest relay answers: the hash of the payload it was sent.
+const relayAnswer = (params: unknown[]) => `0x${hex(authHashFor(params[0] as Hex))}`;
+
 const receipt = { status: "0x1", blockNumber: "0x10", transactionHash: "0xabc" };
 
 describe("authorization message", () => {
@@ -349,7 +352,7 @@ describe("submitRomeTxV1", () => {
       const { conn, asConnection } = fakeConnection();
       const proxy = stubProxy({
         rome_composeUnsignedAtomicV1: refusal,
-        rome_relayUnsignedV1: () => "0xfeed",
+        rome_relayUnsignedV1: relayAnswer,
         eth_getTransactionReceipt: receiptHandler,
       });
       const res = await submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, call);
@@ -358,7 +361,8 @@ describe("submitRomeTxV1", () => {
       expect(conn.sendRawTransaction).not.toHaveBeenCalled();
       const composeParams = proxy.of("rome_composeUnsignedAtomicV1")[0]!.params;
       expect(proxy.of("rome_relayUnsignedV1")[0]!.params).toEqual(composeParams);
-      expect(res).toMatchObject({ route: "relay", hash: "0xfeed", receipt });
+      expect(res).toMatchObject({ route: "relay", receipt });
+      expect(res.hash).toBe(relayAnswer(composeParams));
       expect(res.signature).toBeUndefined();
     });
 
@@ -370,7 +374,7 @@ describe("submitRomeTxV1", () => {
         eth_estimateGas: () => "0x186a0",
         eth_getBlockByNumber: () => ({ baseFeePerGas: "0x5" }),
         rome_composeUnsignedAtomicV1: refusal,
-        rome_relayUnsignedV1: () => "0xfeed",
+        rome_relayUnsignedV1: relayAnswer,
         eth_getTransactionReceipt: receiptHandler,
       });
       await submitRomeTxV1(
@@ -410,14 +414,15 @@ describe("submitRomeTxV1", () => {
 describe("relayV1", () => {
   it("signs once when no signature is passed in", async () => {
     const signer = spySigner();
-    const proxy = stubProxy({ rome_relayUnsignedV1: () => "0xfeed", eth_getTransactionReceipt: () => null });
+    const proxy = stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: () => null });
     const res = await relayV1(
       { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer, receiptTimeoutMs: 1, },
       { to: TOKEN, nonce: 0n, fee: FEE },
     );
     expect(signer.auth).toHaveBeenCalledTimes(1);
     expect(proxy.of("rome_relayUnsignedV1")[0]!.params).toHaveLength(3);
-    expect(res).toMatchObject({ route: "relay", hash: "0xfeed", receipt: null });
+    expect(res).toMatchObject({ route: "relay", receipt: null });
+    expect(res.hash).toBe(relayAnswer(proxy.of("rome_relayUnsignedV1")[0]!.params));
   });
 });
 
@@ -432,14 +437,25 @@ describe("relayV1 with a passed signature", () => {
     expect(proxy.calls).toHaveLength(0);
   });
   it("accepts an authSig when nonce and fee are pinned", async () => {
-    const proxy = stubProxy({ rome_relayUnsignedV1: () => "0xfeed", eth_getTransactionReceipt: () => receipt });
+    const proxy = stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: () => receipt });
     const sig = new Uint8Array(64).fill(3);
     const res = await relayV1(
       { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp },
       { to: TOKEN, nonce: 0n, fee: FEE, authSig: sig },
     );
     expect(proxy.of("rome_relayUnsignedV1")[0]!.params[2]).toBe(base58.encode(sig));
-    expect(res.hash).toBe("0xfeed");
+    expect(res.hash).toBe(relayAnswer(proxy.of("rome_relayUnsignedV1")[0]!.params));
+  });
+
+  it("refuses a relay answer that is not the hash of the payload it was sent, and polls no receipt", async () => {
+    const proxy = stubProxy({ rome_relayUnsignedV1: () => `0x${"ab".repeat(32)}`, eth_getTransactionReceipt: () => receipt });
+    await expect(
+      relayV1(
+        { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp },
+        { to: TOKEN, nonce: 0n, fee: FEE },
+      ),
+    ).rejects.toThrow(/relay answered 0xabab.*expected 0x[0-9a-f]{64}/);
+    expect(proxy.of("eth_getTransactionReceipt")).toHaveLength(0);
   });
 });
 

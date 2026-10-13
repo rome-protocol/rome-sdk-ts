@@ -374,16 +374,20 @@ export async function relayV1(
 /** Send an already built payload and its authorization signature to the proxy's relay. */
 async function relayPrepared(
   deps: SolanaLaneV1Deps,
-  { fetchImpl, signer, from, rlp }: Awaited<ReturnType<typeof prepare>>,
+  { fetchImpl, signer, from, rlp, hash }: Awaited<ReturnType<typeof prepare>>,
   authSig: Uint8Array,
 ): Promise<SolanaLaneV1Result> {
-  const hash = await jsonRpc<Hex | null>(
+  const answered = await jsonRpc<Hex | null>(
     deps.proxyUrl,
     "rome_relayUnsignedV1",
     [rlp, signer.payer.toBase58(), base58.encode(authSig)],
     fetchImpl,
   );
-  if (!hash) throw new Error("rome_relayUnsignedV1: empty result");
+  if (!answered) throw new Error("rome_relayUnsignedV1: empty result");
+  // The hash is fixed by the payload the wallet authorized; an answer for another transaction must not be reported as this one.
+  if (answered.toLowerCase() !== hash) {
+    throw new Error(`rome_relayUnsignedV1: relay answered ${answered}, expected ${hash} (the hash of the payload that was authorized)`);
+  }
   const receipt = await waitForReceipt(deps.proxyUrl, hash, { timeoutMs: deps.receiptTimeoutMs ?? 90_000, fetchImpl });
   return { hash, from, route: "relay", receipt };
 }
