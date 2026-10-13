@@ -16,7 +16,7 @@ export interface V1MessageSpec {
   numRequiredSignatures?: number;
   numReadonlySigned?: number;
   numReadonlyUnsigned?: number;
-  accountKeys: PublicPublicKey[];
+  accountKeys: PublicKey[];
   config?: V1Config;
   /** Overrides the mask derived from `config` (for malformed-input cases). */
   rawMask?: number;
@@ -103,7 +103,11 @@ export interface AtomicSpec {
   /** Instructions appended after the fixture's two. */
   extra?: Ix[];
   /** Account keys appended after the fixture's (so `extra` can name a new program). */
-  extraKeys?: PublicPublicKey[];
+  extraKeys?: PublicKey[];
+  /** Splice a priority fee (micro-lamports per compute unit) into the config. */
+  priorityFee?: bigint;
+  /** Overrides the compute-unit limit of the fixture. */
+  computeUnitLimit?: number;
   /** Put another key at index 0 and the payer at index 1. */
   payerAt1?: boolean;
 }
@@ -135,7 +139,11 @@ export function atomicWire(spec: AtomicSpec): Buffer {
     buildV1Message({
       numReadonlyUnsigned: parsed.header.numReadonlyUnsignedAccounts,
       accountKeys: keys,
-      config: { computeUnitLimit: parsed.computeUnitLimit ?? 1_000_000, loadedAccountsDataSize },
+      config: {
+        ...(spec.priorityFee === undefined ? {} : { priorityFee: spec.priorityFee }),
+        computeUnitLimit: spec.computeUnitLimit ?? parsed.computeUnitLimit ?? 1_000_000,
+        loadedAccountsDataSize,
+      },
       instructions,
     }),
   );
@@ -157,6 +165,7 @@ export function depositData(opts: { chainId: number; from: Hex; to: Hex; mint: b
 
 export interface DepositSpec {
   payer: PublicKey;
+  priorityFee?: bigint;
   data: Uint8Array;
   extra?: Ix[];
 }
@@ -170,7 +179,11 @@ export function depositWire(spec: DepositSpec): Buffer {
     buildV1Message({
       numReadonlyUnsigned: parsed.header.numReadonlyUnsignedAccounts,
       accountKeys: keys,
-      config: { computeUnitLimit: parsed.computeUnitLimit ?? 1_000_000, loadedAccountsDataSize },
+      config: {
+        ...(spec.priorityFee === undefined ? {} : { priorityFee: spec.priorityFee }),
+        computeUnitLimit: parsed.computeUnitLimit ?? 1_000_000,
+        loadedAccountsDataSize,
+      },
       instructions: [{ ...parsed.instructions[0]!, data: spec.data }, ...(spec.extra ?? [])],
     }),
   );

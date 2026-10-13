@@ -120,6 +120,8 @@ export interface ParsedV1Message {
   header: { numRequiredSignatures: number; numReadonlySignedAccounts: number; numReadonlyUnsignedAccounts: number };
   accountKeys: PublicKey[];
   instructions: V1Instruction[];
+  /** Set only when the message's config mask carries a priority fee (micro-lamports per compute unit). */
+  priorityFeeMicroLamports?: bigint;
   /** Set only when the message's config mask carries a compute-unit limit. */
   computeUnitLimit?: number;
   /** Set only when the message's config mask carries a heap size. */
@@ -173,8 +175,10 @@ export function parseV1Message(message: Uint8Array): ParsedV1Message {
     off += 4;
     return v;
   };
+  let priorityFeeMicroLamports: bigint | undefined;
   if (feeBits) {
     need(8, "the priority fee");
+    priorityFeeMicroLamports = view.getBigUint64(off, true);
     off += 8;
   }
   const computeUnitLimit = mask & 0b100 ? u32("the compute-unit limit") : undefined;
@@ -202,6 +206,7 @@ export function parseV1Message(message: Uint8Array): ParsedV1Message {
     header,
     accountKeys,
     instructions,
+    ...(priorityFeeMicroLamports === undefined ? {} : { priorityFeeMicroLamports }),
     ...(computeUnitLimit === undefined ? {} : { computeUnitLimit }),
     ...(heapBytes === undefined ? {} : { heapBytes }),
   };
@@ -257,6 +262,12 @@ export interface SolanaLaneV1Deps {
   programId: PublicKey | string;
   chainId: number;
   signer: SignerLike;
+  /**
+   * Optional ceiling on the compute-unit limit a composed transaction may set;
+   * anything above it is refused. Unset means no ceiling. (A priority fee is
+   * always refused, so the limit alone costs the payer nothing extra.)
+   */
+  maxComputeUnitLimit?: number;
   fetchImpl?: typeof fetch;
   /** How long to wait for the EVM receipt. Default 90 000 ms. */
   receiptTimeoutMs?: number;
@@ -417,12 +428,25 @@ const hexToBig = (h: string) => (h === "0x" ? 0n : BigInt(h));
  * call needs. Anything else (a transfer appended from the payer, a third
  * program, a different payload) throws with what was unexpected.
  */
-function checkComposed(parsed: ParsedV1Message, payer: PublicKey, programId: PublicKey, expected: Expected): void {
+function checkComposed(
+  parsed: ParsedV1Message,
+  payer: PublicKey,
+  programId: PublicKey,
+  expected: Expected,
+  maxComputeUnitLimit?: number,
+): void {
   if (parsed.header.numRequiredSignatures !== 1) {
     throw new Error(`composed transaction needs ${parsed.header.numRequiredSignatures} signatures; this lane signs for one payer`);
   }
   if (!parsed.accountKeys[0]?.equals(payer)) {
     throw new Error(`composed transaction: the fee payer is ${parsed.accountKeys[0]?.toBase58()}, not the signer ${payer.toBase58()}`);
+  }
+  // The lane never asks for a priority fee: it would be paid from the payer's SOL, and a wallet that cannot decode a v1 wire cannot show it.
+  if (parsed.priorityFeeMicroLamports !== undefined) {
+    throw new Error(`composed transaction sets a priority fee (${parsed.priorityFeeMicroLamports} micro-lamports per compute unit); this lane never pays one`);
+  }
+  if (maxComputeUnitLimit !== undefined && parsed.computeUnitLimit !== undefined && parsed.computeUnitLimit > maxComputeUnitLimit) {
+    throw new Error(`composed transaction sets a compute-unit limit of ${parsed.computeUnitLimit}, above the allowed ${maxComputeUnitLimit}`);
   }
   const rome: V1Instruction[] = [];
   const verifiers: V1Instruction[] = [];
@@ -504,7 +528,7 @@ function checkAuthorization(data: Uint8Array, payer: PublicKey, hash: Uint8Array
 async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array, expected: Expected): Promise<string> {
   const { connection } = deps;
   const { message } = splitV1Wire(wire);
-  checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected);
+  checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected, deps.maxComputeUnitLimit);
   const txSig = await signer.signV1Wire(wire);
   if (!(txSig instanceof Uint8Array) || txSig.length !== SIGNATURE_BYTES) {
     throw new Error(
