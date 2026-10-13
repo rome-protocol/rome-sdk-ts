@@ -548,7 +548,14 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
     throw new Error("the wallet signed a different transaction than the one composed");
   }
   const signed = packSignedV1Wire(message, txSig);
-  const signature = await connection.sendRawTransaction(signed, { skipPreflight: true });
+  // The signature is known before the send; if the send fails the node may still have taken the transaction, so the caller needs it to look.
+  const expectedSignature = base58.encode(txSig);
+  let signature: string;
+  try {
+    signature = await connection.sendRawTransaction(signed, { skipPreflight: true });
+  } catch (err) {
+    throw new Error(`Solana transaction ${expectedSignature} may not have been sent: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   const confirmTimeoutMs = deps.confirmTimeoutMs ?? 90_000;
   const deadline = Date.now() + confirmTimeoutMs;

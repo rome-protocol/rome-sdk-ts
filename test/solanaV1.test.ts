@@ -326,6 +326,16 @@ describe("submitRomeTxV1", () => {
     expect(conn.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it("names the Solana signature when the send itself throws, since the node may have accepted it", async () => {
+    const signer = spySigner();
+    const { conn, asConnection } = fakeConnection();
+    conn.sendRawTransaction.mockRejectedValue(new Error("fetch failed: socket hang up"));
+    stubProxy({ rome_composeUnsignedAtomicV1: composeAtomicFor });
+    const err = await submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, call).catch((e: Error) => e);
+    const txSig = await signer.wire.mock.results[0]!.value;
+    expect((err as Error).message).toBe(`Solana transaction ${base58.encode(txSig)} may not have been sent: fetch failed: socket hang up`);
+  });
+
   it("keeps polling through a status error after the send, and still returns the signature", async () => {
     const { conn, asConnection } = fakeConnection();
     conn.getSignatureStatuses
