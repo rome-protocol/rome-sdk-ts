@@ -128,7 +128,7 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `submitRomeTxSolanaLane(deps, call)` | the Solana lane — a Solana wallet drives your EVM contract |
 | `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit |
 | `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
-| `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from SOL / poll the EVM receipt |
+| `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
 | `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
 | `composeAtomicV1` / `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 proxy call and wire helpers |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
