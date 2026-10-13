@@ -266,12 +266,6 @@ export interface SolanaLaneV1Deps {
   programId: PublicKey | string;
   chainId: number;
   signer: SignerLike;
-  /**
-   * Optional ceiling on the compute-unit limit a composed transaction may set;
-   * anything above it is refused. Unset means no ceiling. (A priority fee is
-   * always refused, so the limit alone costs the payer nothing extra.)
-   */
-  maxComputeUnitLimit?: number;
   fetchImpl?: typeof fetch;
   /** How long to wait for the EVM receipt. Default 90 000 ms. */
   receiptTimeoutMs?: number;
@@ -441,7 +435,6 @@ function checkComposed(
   payer: PublicKey,
   programId: PublicKey,
   expected: Expected,
-  maxComputeUnitLimit?: number,
 ): void {
   if (parsed.header.numRequiredSignatures !== 1) {
     throw new Error(`composed transaction needs ${parsed.header.numRequiredSignatures} signatures; this lane signs for one payer`);
@@ -452,9 +445,6 @@ function checkComposed(
   // The lane never asks for a priority fee: it would be paid from the payer's SOL, and a wallet that cannot decode a v1 wire cannot show it.
   if (parsed.priorityFeeMicroLamports !== undefined) {
     throw new Error(`composed transaction sets a priority fee (${parsed.priorityFeeMicroLamports} micro-lamports per compute unit); this lane never pays one`);
-  }
-  if (maxComputeUnitLimit !== undefined && parsed.computeUnitLimit !== undefined && parsed.computeUnitLimit > maxComputeUnitLimit) {
-    throw new Error(`composed transaction sets a compute-unit limit of ${parsed.computeUnitLimit}, above the allowed ${maxComputeUnitLimit}`);
   }
   const rome: V1Instruction[] = [];
   const verifiers: V1Instruction[] = [];
@@ -536,7 +526,7 @@ function checkAuthorization(data: Uint8Array, payer: PublicKey, hash: Uint8Array
 async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array, expected: Expected): Promise<string> {
   const { connection } = deps;
   const { message } = splitV1Wire(wire);
-  checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected, deps.maxComputeUnitLimit);
+  checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected);
   const txSig = await signer.signV1Wire(wire);
   if (!(txSig instanceof Uint8Array) || txSig.length !== SIGNATURE_BYTES) {
     throw new Error(

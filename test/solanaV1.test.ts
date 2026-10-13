@@ -607,21 +607,6 @@ describe("composed transaction check", () => {
   it("refuses a composed transaction that sets a priority fee, before signing", async () => {
     await expectRefused((rlp, authSig) => atomicWire({ ...base(rlp, authSig), priorityFee: 1_000_000n }), /sets a priority fee/);
   });
-  it("refuses a compute-unit limit above the ceiling the caller set, and accepts one at it", async () => {
-    const signer = spySigner();
-    const { conn, asConnection } = fakeConnection();
-    const answer = (cu: number) => (params: unknown[]) => ({
-      recentBlockhash: "x",
-      transaction: b64(atomicWire({ ...base(params[0] as Hex, base58.decode(params[2] as string)), computeUnitLimit: cu })),
-    });
-    const deps = { connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer, maxComputeUnitLimit: 200_000 };
-    stubProxy({ rome_composeUnsignedAtomicV1: answer(1_400_000), eth_getTransactionReceipt: () => receipt });
-    await expect(submitRomeTxV1(deps, call)).rejects.toThrow(/compute-unit limit of 1400000, above the allowed 200000/);
-    expect(signer.wire).toHaveBeenCalledTimes(0);
-    expect(conn.sendRawTransaction).not.toHaveBeenCalled();
-    stubProxy({ rome_composeUnsignedAtomicV1: answer(200_000), eth_getTransactionReceipt: () => receipt });
-    await expect(submitRomeTxV1(deps, call)).resolves.toMatchObject({ route: "atomic" });
-  });
   it("refuses an instruction for a third program", async () => {
     const stranger = Keypair.generate().publicKey;
     await expectRefused(
