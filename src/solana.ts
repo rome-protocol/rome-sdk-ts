@@ -239,6 +239,7 @@ export interface FeeFields {
   gasLimit: bigint;
 }
 
+/** POST one JSON-RPC call and return its `result`; an error answer throws. */
 export async function jsonRpc<T>(rpcUrl: string, method: string, params: unknown[], fetchImpl: typeof fetch): Promise<T> {
   const res = await fetchImpl(rpcUrl, {
     method: "POST",

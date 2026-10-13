@@ -84,6 +84,8 @@ export function toLaneSigner(signer: SignerLike): LaneSigner {
 const V1_VERSION_BYTE = 0x81;
 const SIGNATURE_BYTES = 64;
 const KNOWN_CONFIG_MASK_BITS = 0b11111;
+/** Version, header, config mask, blockhash and the two counts. */
+const MIN_MESSAGE_BYTES = 42;
 
 /** Split a v1 wire into its message and signature count. Only single-signer wires are accepted. */
 export function splitV1Wire(wire: Uint8Array): { message: Uint8Array; numRequiredSignatures: number } {
@@ -93,6 +95,9 @@ export function splitV1Wire(wire: Uint8Array): { message: Uint8Array; numRequire
   const numRequiredSignatures = wire[1] ?? 0;
   if (numRequiredSignatures !== 1) {
     throw new Error(`composed transaction needs ${numRequiredSignatures} signatures; this lane signs for one payer`);
+  }
+  if (wire.length < SIGNATURE_BYTES * numRequiredSignatures + MIN_MESSAGE_BYTES) {
+    throw new Error(`v1 wire too short (${wire.length} bytes) for a header and ${numRequiredSignatures} signature`);
   }
   return { message: wire.slice(0, wire.length - SIGNATURE_BYTES * numRequiredSignatures), numRequiredSignatures };
 }
@@ -137,7 +142,7 @@ export function parseV1Message(message: Uint8Array): ParsedV1Message {
       throw new Error(`v1 message truncated reading ${what} (need ${n} bytes at ${off}, ${message.length - off} left)`);
     }
   };
-  need(42, "the fixed header");
+  need(MIN_MESSAGE_BYTES, "the fixed header");
   if (message[0] !== V1_VERSION_BYTE) throw new Error(`not a v1 message (version byte 0x${message[0]!.toString(16)})`);
   const header = {
     numRequiredSignatures: message[1]!,
@@ -191,6 +196,7 @@ export function parseV1Message(message: Uint8Array): ParsedV1Message {
     off += h.dataLen;
     instructions.push({ programIdIndex: h.programIdIndex, accountIndices, data });
   }
+  if (off !== message.length) throw new Error(`v1 message has ${message.length - off} trailing bytes after the last instruction`);
   return {
     header,
     accountKeys,
@@ -251,6 +257,8 @@ export interface SolanaLaneV1Deps {
   fetchImpl?: typeof fetch;
   /** How long to wait for the EVM receipt. Default 90 000 ms. */
   receiptTimeoutMs?: number;
+  /** How long to wait for the Solana transaction to confirm. Default 90 000 ms. */
+  confirmTimeoutMs?: number;
 }
 
 export interface SolanaLaneV1Result {
@@ -267,7 +275,6 @@ type V1Call = EvmCall & { nonce?: bigint; fee?: FeeFields };
 
 const toHex = (n: bigint): Hex => `0x${n.toString(16)}`;
 const hexOf = (b: Uint8Array): Hex => `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
-const CONFIRM_TIMEOUT_MS = 90_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Size the nonce and fee, build the unsigned payload and its hash. */
@@ -310,7 +317,8 @@ export async function submitRomeTxV1(
   deps: SolanaLaneV1Deps,
   call: V1Call & { relayOnRefusal?: boolean },
 ): Promise<SolanaLaneV1Result> {
-  const { fetchImpl, signer, from, rlp, hash } = await prepare(deps, call);
+  const prepared = await prepare(deps, call);
+  const { fetchImpl, signer, from, rlp, hash } = prepared;
   const authSig = await signer.signAuthHash(ed25519AuthMessage(authHashFor(rlp)));
 
   let composed: ComposeV1Result;
@@ -318,10 +326,11 @@ export async function submitRomeTxV1(
     composed = await composeAtomicV1(deps.proxyUrl, rlp, signer.payer, authSig, fetchImpl);
   } catch (err) {
     if (call.relayOnRefusal === false || !isAtomicRefusal(err)) throw err;
-    return relayV1(deps, { ...call, authSig });
+    // Relay the payload the signature was made over, not a freshly sized one.
+    return relayPrepared(deps, prepared, authSig);
   }
 
-  const signature = await signAndSend(deps.connection, signer, decodeBase64(composed.transaction));
+  const signature = await signAndSend(deps, signer, decodeBase64(composed.transaction));
   const receipt = await waitForReceipt(deps.proxyUrl, hash, { timeoutMs: deps.receiptTimeoutMs ?? 90_000, fetchImpl });
   return { hash, from, route: "atomic", signature, receipt };
 }
@@ -329,14 +338,24 @@ export async function submitRomeTxV1(
 /**
  * Relay an EVM call through the proxy, which composes, submits and pays for the
  * Solana transaction itself; the sender pays gas in the chain's native token.
- * The wallet signs only the authorization message, unless `authSig` is passed.
+ * The wallet signs only the authorization message, unless `authSig` is passed;
+ * a passed signature covers one payload, so pin `nonce` and `fee` with it.
  */
 export async function relayV1(
   deps: SolanaLaneV1Deps,
   call: V1Call & { authSig?: Uint8Array },
 ): Promise<SolanaLaneV1Result> {
-  const { fetchImpl, signer, from, rlp } = await prepare(deps, call);
-  const authSig = call.authSig ?? (await signer.signAuthHash(ed25519AuthMessage(authHashFor(rlp))));
+  const prepared = await prepare(deps, call);
+  const authSig = call.authSig ?? (await prepared.signer.signAuthHash(ed25519AuthMessage(authHashFor(prepared.rlp))));
+  return relayPrepared(deps, prepared, authSig);
+}
+
+/** Send an already built payload and its authorization signature to the proxy's relay. */
+async function relayPrepared(
+  deps: SolanaLaneV1Deps,
+  { fetchImpl, signer, from, rlp }: Awaited<ReturnType<typeof prepare>>,
+  authSig: Uint8Array,
+): Promise<SolanaLaneV1Result> {
   const hash = await jsonRpc<Hex | null>(
     deps.proxyUrl,
     "rome_relayUnsignedV1",
@@ -365,7 +384,7 @@ export async function fundSyntheticGas(deps: SolanaLaneV1Deps, amountWei: bigint
     deps.fetchImpl ?? fetch,
   );
   if (!composed) throw new Error("rome_composeExternalDepositV1: empty result");
-  return { signature: await signAndSend(deps.connection, signer, decodeBase64(composed.transaction)) };
+  return { signature: await signAndSend(deps, signer, decodeBase64(composed.transaction)) };
 }
 
 /**
@@ -374,13 +393,15 @@ export async function fundSyntheticGas(deps: SolanaLaneV1Deps, amountWei: bigint
  * reaches a prompt. Preflight is skipped: web3.js 1.x cannot simulate a v1
  * transaction, and the chain validates it anyway.
  */
-async function signAndSend(connection: Connection, signer: LaneSigner, wire: Uint8Array): Promise<string> {
+async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array): Promise<string> {
+  const { connection } = deps;
   const { message } = splitV1Wire(wire);
   parseV1Message(message);
   const signed = packSignedV1Wire(message, await signer.signV1Wire(wire));
   const signature = await connection.sendRawTransaction(signed, { skipPreflight: true });
 
-  const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+  const confirmTimeoutMs = deps.confirmTimeoutMs ?? 90_000;
+  const deadline = Date.now() + confirmTimeoutMs;
   for (;;) {
     const status = (await connection.getSignatureStatuses([signature])).value[0];
     if (status?.err) {
@@ -388,8 +409,8 @@ async function signAndSend(connection: Connection, signer: LaneSigner, wire: Uin
       throw new Error(`Solana transaction failed: ${JSON.stringify(status.err)}${logs ? `\n${logs}` : ""}`);
     }
     if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
-    if (Date.now() > deadline) throw new Error(`Solana transaction ${signature} not confirmed within ${CONFIRM_TIMEOUT_MS} ms`);
-    await sleep(1000);
+    if (Date.now() > deadline) throw new Error(`Solana transaction ${signature} not confirmed within ${confirmTimeoutMs} ms`);
+    await sleep(Math.min(1000, Math.max(deadline - Date.now(), 1)));
   }
 }
 

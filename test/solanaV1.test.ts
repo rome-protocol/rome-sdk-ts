@@ -129,6 +129,9 @@ describe("v1 wire", () => {
     wire[1] = 2;
     expect(() => splitV1Wire(wire)).toThrow(/signature/);
   });
+  it("rejects a wire too short to hold a header and a signature", () => {
+    expect(() => splitV1Wire(Uint8Array.of(0x81, 1, 0, 0, 0))).toThrow(/too short/);
+  });
   it("decodes a message composed by a live proxy", () => {
     const { message } = splitV1Wire(unsignedWire());
     const parsed = parseV1Message(message);
@@ -162,6 +165,12 @@ describe("v1 wire", () => {
   it("rejects partial priority-fee bits", () => {
     expect(() => parseV1Message(buildV1Message({ accountKeys: keys, rawMask: 0b01, instructions: ix }))).toThrow(/priority-fee/);
     expect(() => parseV1Message(buildV1Message({ accountKeys: keys, rawMask: 0b10, instructions: ix }))).toThrow(/priority-fee/);
+  });
+  it("rejects trailing bytes after the last instruction", () => {
+    const m = buildV1Message({ accountKeys: keys, instructions: ix });
+    const longer = new Uint8Array(m.length + 1);
+    longer.set(m);
+    expect(() => parseV1Message(longer)).toThrow(/trailing/);
   });
   it("rejects a truncated message", () => {
     const m = buildV1Message({ accountKeys: keys, config: { computeUnitLimit: 1 }, instructions: ix });
@@ -243,6 +252,14 @@ describe("submitRomeTxV1", () => {
     ).rejects.toThrow(/InstructionError[\s\S]*Program log: boom/);
   });
 
+  it("throws when the Solana transaction never confirms", async () => {
+    const { asConnection } = fakeConnection(null);
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp, confirmTimeoutMs: 20 }, call),
+    ).rejects.toThrow(/not confirmed within 20 ms/);
+  });
+
   describe("refusal", () => {
     const refusal = () => ({ error: { code: -32000, message: ATOMIC_REFUSAL_TEXT } });
 
@@ -262,6 +279,30 @@ describe("submitRomeTxV1", () => {
       expect(proxy.of("rome_relayUnsignedV1")[0]!.params).toEqual(composeParams);
       expect(res).toMatchObject({ route: "relay", hash: "0xfeed", receipt });
       expect(res.signature).toBeUndefined();
+    });
+
+    it("relays the very payload the signature covers when nonce and fee are not pinned", async () => {
+      const signer = spySigner();
+      let counts = 0;
+      const proxy = stubProxy({
+        eth_getTransactionCount: () => `0x${(4 + counts++).toString(16)}`, // a different answer on every call
+        eth_estimateGas: () => "0x186a0",
+        eth_getBlockByNumber: () => ({ baseFeePerGas: "0x5" }),
+        rome_composeUnsignedAtomicV1: refusal,
+        rome_relayUnsignedV1: () => "0xfeed",
+        eth_getTransactionReceipt: receiptHandler,
+      });
+      await submitRomeTxV1(
+        { connection: fakeConnection().asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer },
+        { to: TOKEN, data: "0xdeadbeef" },
+      );
+      const [composeRlp, , composeSig] = proxy.of("rome_composeUnsignedAtomicV1")[0]!.params as string[];
+      const [relayRlp, , relaySig] = proxy.of("rome_relayUnsignedV1")[0]!.params as string[];
+      expect(relayRlp).toBe(composeRlp);
+      expect(relaySig).toBe(composeSig);
+      expect(proxy.of("eth_getTransactionCount")).toHaveLength(1);
+      const envelope = ed25519AuthMessage(authHashFor(relayRlp as Hex));
+      expect(ed25519.verify(base58.decode(relaySig!), envelope, kp.publicKey.toBytes())).toBe(true);
     });
 
     it("propagates the refusal when relayOnRefusal is false", async () => {

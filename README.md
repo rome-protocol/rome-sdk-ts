@@ -82,7 +82,7 @@ const { route, signature, hash, receipt } = await submitRomeTxV1(
 );
 ```
 
-A Wallet Standard wallet satisfies `LaneSigner` with two features: `solana:signMessage` for the authorization and `solana:signTransaction` on the raw wire bytes for the transaction signature (a v1 signed wire is the message followed by the 64-byte signature):
+The authorization message is plain text, so any wallet that offers `solana:signMessage` can sign it. The transaction signature is different: `signV1Wire` receives the raw v1 wire and must return an ed25519 signature over everything but the last 64 bytes (the empty signature slot). A signer that can sign raw bytes does that directly, as a `Keypair` does. Wallet code that first decodes the transaction with web3.js 1.x or `@solana/kit` may not recognise the v1 format, so check your wallet's `solana:signTransaction` against a v1 wire before relying on it:
 
 ```ts
 const signer: LaneSigner = {
@@ -91,10 +91,7 @@ const signer: LaneSigner = {
     const [{ signature }] = await wallet.features["solana:signMessage"].signMessage({ account, message });
     return signature;
   },
-  async signV1Wire(wire) {
-    const [{ signedTransaction }] = await wallet.features["solana:signTransaction"].signTransaction({ account, transaction: wire });
-    return signedTransaction.slice(-64);
-  },
+  signV1Wire: (wire) => signRawBytes(wire.slice(0, wire.length - 64)), // your raw-bytes ed25519 signer
 };
 ```
 
@@ -134,6 +131,7 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from SOL / poll the EVM receipt |
 | `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
 | `composeAtomicV1` / `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 proxy call and wire helpers |
+| `jsonRpc(url, method, params, fetch)` | the JSON-RPC call the lanes use: returns `result`, throws on an error answer |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
 | `PRECOMPILE_ADDRESSES` / `CPI_ABI` / `HELPER_ABI` / `WITHDRAW_ABI` / `SYSTEM_ABI` / `SELECTORS` / `EXTERNAL_AUTHORITY_SEED` | precompile addresses, ABIs, and verified selectors |
