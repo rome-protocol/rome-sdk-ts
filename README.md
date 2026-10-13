@@ -77,7 +77,7 @@ The wallet **signs the Solana transaction and sends it to the Solana RPC** (the 
 import { submitRomeTxV1 } from "@rome-protocol/sdk";
 
 const { route, signature, hash, receipt } = await submitRomeTxV1(
-  { connection, proxyUrl, chainId, signer: keypair }, // a Keypair, or any LaneSigner
+  { connection, proxyUrl, programId, chainId, signer: keypair }, // programId: the chain's Rome EVM program; signer: a Keypair, or any LaneSigner
   { to: contract, data: encodeFunctionData({ abi, functionName: "deposit" }) },
 );
 ```
@@ -97,6 +97,8 @@ const signer: LaneSigner = {
   },
 };
 ```
+
+Before the wallet is asked for the second signature, the SDK checks the composed transaction against what you asked for, and throws if anything differs: one signer with the payer at account 0, instructions only for `programId` and the Ed25519 verifier, exactly one Rome instruction carrying your payload byte for byte, and an Ed25519 instruction that vouches for the payer over this call's authorization. `fundSyntheticGas` is held to the same standard (one deposit instruction for your chain, to your own synthetic address, for the amount you asked). The parser also refuses config-mask bits it does not know on purpose, so a proxy upgrade that introduces a new bit needs an SDK update.
 
 If the composer refuses a call because it does not fit one atomic transaction, `submitRomeTxV1` hands it to the proxy with the **same** authorization signature (no second prompt), and the result has `route: "relay"` and no Solana `signature`. Pass `relayOnRefusal: false` to get the refusal as an error, or call `relayV1` yourself. A relayed call is paid for in the chain's native gas token, so the sender needs a balance: `fundSyntheticGas(deps, amountWei)` tops it up from the wallet's own token account of the chain's gas token (USDC on Hadrian and Rubicon; the wallet needs some of it, plus SOL for the Solana fee). `amountWei` is in the chain's 18-decimal wei and must be a multiple of 10^12. The relay needs at least `gasLimit × maxFeePerGas` of balance.
 

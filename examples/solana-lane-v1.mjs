@@ -4,6 +4,7 @@
 //   SOLANA_KEYPAIR=~/.config/solana/id.json node examples/solana-lane-v1.mjs
 //
 // The keypair needs a little SOL for the Solana fee. Its key is never printed.
+// PROGRAM_ID is the chain's Rome EVM program (default: the one Hadrian runs on).
 import { readFileSync } from "node:fs";
 import { Connection, Keypair } from "@solana/web3.js";
 import { encodeFunctionData, parseAbi } from "viem";
@@ -12,6 +13,7 @@ import { submitRomeTxV1 } from "../dist/index.js";
 const keypairPath = process.env.SOLANA_KEYPAIR;
 if (!keypairPath) throw new Error("set SOLANA_KEYPAIR to the path of a JSON keypair file");
 const proxyUrl = process.env.PROXY_URL ?? "https://hadrian.testnet.romeprotocol.xyz/";
+const programId = process.env.PROGRAM_ID ?? "RPTWwELXAY4KC9ZPHhaxp7Sq1hHtU3HNEgLbSegCcWf";
 const rpcUrl = process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
 const chainId = Number(process.env.CHAIN_ID ?? 200010);
 const token = process.env.TOKEN ?? "0xbce339ba4c3a8de3bb8af1c5539e6ac11da3112d";
@@ -22,7 +24,7 @@ const connection = new Connection(rpcUrl, "confirmed");
 console.log("wallet   ", keypair.publicKey.toBase58());
 
 const result = await submitRomeTxV1(
-  { connection, proxyUrl, chainId, signer: keypair },
+  { connection, proxyUrl, programId, chainId, signer: keypair },
   {
     to: token,
     data: encodeFunctionData({ abi: parseAbi(["function approve(address,uint256)"]), functionName: "approve", args: [spender, 1n] }),

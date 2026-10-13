@@ -19,7 +19,7 @@
 import { Keypair, PublicKey, type Connection } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import { base58 } from "@scure/base";
-import { concatHex, keccak256, type Hex } from "viem";
+import { bytesToHex, concatHex, fromRlp, hexToBytes, keccak256, type Hex } from "viem";
 import {
   buildUnsignedEip1559Rlp,
   sizeSolanaLaneFee,
@@ -253,6 +253,8 @@ export interface SolanaLaneV1Deps {
   /** Solana RPC connection: the signed transaction is sent and confirmed here, not on the proxy. */
   connection: Connection;
   proxyUrl: string;
+  /** The chain's Rome EVM program. A composed transaction may call only this program and the Ed25519 verifier. */
+  programId: PublicKey | string;
   chainId: number;
   signer: SignerLike;
   fetchImpl?: typeof fetch;
@@ -331,7 +333,7 @@ export async function submitRomeTxV1(
     return relayPrepared(deps, prepared, authSig);
   }
 
-  const signature = await signAndSend(deps, signer, decodeBase64(composed.transaction));
+  const signature = await signAndSend(deps, signer, decodeBase64(composed.transaction), { kind: "atomic", rlp });
   const receipt = await waitForReceipt(deps.proxyUrl, hash, { timeoutMs: deps.receiptTimeoutMs ?? 90_000, fetchImpl });
   return { hash, from, route: "atomic", signature, receipt };
 }
@@ -389,19 +391,120 @@ export async function fundSyntheticGas(deps: SolanaLaneV1Deps, amountWei: bigint
     deps.fetchImpl ?? fetch,
   );
   if (!composed) throw new Error("rome_composeExternalDepositV1: empty result");
-  return { signature: await signAndSend(deps, signer, decodeBase64(composed.transaction)) };
+  return {
+    signature: await signAndSend(deps, signer, decodeBase64(composed.transaction), { kind: "deposit", chainId: deps.chainId, amountWei }),
+  };
+}
+
+/** What a composed transaction is meant to do; {@link checkComposed} refuses anything else. */
+type Expected = { kind: "atomic"; rlp: Hex } | { kind: "deposit"; chainId: number; amountWei: bigint };
+
+const ED25519_PROGRAM = new PublicKey("Ed25519SigVerify111111111111111111111111111");
+const ED25519_OFFSETS_HEADER = 14;
+const SAME_INSTRUCTION = 0xffff;
+/** Rome EVM program: instruction tag, then 9 more zero bytes, then the transaction type byte. */
+const ATOMIC_PREFIX = Uint8Array.of(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02);
+const DEPOSIT_TAG = 0x01;
+const DEPOSIT_TX_TYPE = 0x7e;
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
+const hexToBig = (h: string) => (h === "0x" ? 0n : BigInt(h));
+
+/**
+ * Refuse a composed transaction that is not exactly what was asked for. The
+ * payer signs whatever the proxy returns, so this runs BEFORE the wallet is
+ * asked to sign: one signer, the payer at key 0, and only the instructions the
+ * call needs. Anything else (a transfer appended from the payer, a third
+ * program, a different payload) throws with what was unexpected.
+ */
+function checkComposed(parsed: ParsedV1Message, payer: PublicKey, programId: PublicKey, expected: Expected): void {
+  if (parsed.header.numRequiredSignatures !== 1) {
+    throw new Error(`composed transaction needs ${parsed.header.numRequiredSignatures} signatures; this lane signs for one payer`);
+  }
+  if (!parsed.accountKeys[0]?.equals(payer)) {
+    throw new Error(`composed transaction: the fee payer is ${parsed.accountKeys[0]?.toBase58()}, not the signer ${payer.toBase58()}`);
+  }
+  const rome: V1Instruction[] = [];
+  const verifiers: V1Instruction[] = [];
+  for (const [i, ix] of parsed.instructions.entries()) {
+    const program = parsed.accountKeys[ix.programIdIndex];
+    if (!program) throw new Error(`composed transaction: instruction ${i} names a program index outside the account list`);
+    if (program.equals(programId)) rome.push(ix);
+    else if (program.equals(ED25519_PROGRAM)) verifiers.push(ix);
+    else throw new Error(`composed transaction: instruction ${i} calls an unexpected program ${program.toBase58()}`);
+  }
+  if (rome.length !== 1) throw new Error(`composed transaction: expected one Rome program instruction, found ${rome.length}`);
+  const data = rome[0]!.data;
+
+  if (expected.kind === "atomic") {
+    const rlp = hexToBytes(expected.rlp);
+    if (!sameBytes(data.subarray(0, ATOMIC_PREFIX.length), ATOMIC_PREFIX) || !sameBytes(data.subarray(ATOMIC_PREFIX.length), rlp)) {
+      throw new Error("composed transaction: the Rome instruction does not carry the payload that was authorized");
+    }
+    if (verifiers.length !== 1) throw new Error(`composed transaction: expected one Ed25519 instruction, found ${verifiers.length}`);
+    checkAuthorization(verifiers[0]!.data, payer, authHashFor(expected.rlp));
+    return;
+  }
+
+  if (verifiers.length !== 0 || parsed.instructions.length !== 1) {
+    throw new Error("composed deposit: expected the Rome instruction alone");
+  }
+  const chainId = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (data.length < 10 || data[0] !== DEPOSIT_TAG || chainId.getBigUint64(1, true) !== BigInt(expected.chainId) || data[9] !== DEPOSIT_TX_TYPE) {
+    throw new Error("composed deposit: the Rome instruction is not a deposit for this chain");
+  }
+  // Deposit payload: [source hash, from, to, mint, value, gas limit, system flag, data]
+  let fields: unknown;
+  try {
+    fields = fromRlp(bytesToHex(data.subarray(10)), "hex");
+  } catch {
+    throw new Error("composed deposit: the deposit payload is not valid RLP");
+  }
+  if (!Array.isArray(fields) || fields.length !== 8 || fields.some((f, i) => i !== 7 && typeof f !== "string")) {
+    throw new Error("composed deposit: unexpected deposit payload shape");
+  }
+  const synthetic = syntheticAddress(payer).toLowerCase();
+  const [, from, to, mint, value] = fields as string[];
+  if (from!.toLowerCase() !== synthetic || to!.toLowerCase() !== synthetic) {
+    throw new Error("composed deposit: the deposit does not credit the signer's own synthetic address");
+  }
+  if (hexToBig(mint!) !== expected.amountWei || hexToBig(value!) !== expected.amountWei) {
+    throw new Error(`composed deposit: the amount is not the ${expected.amountWei} wei that was asked for`);
+  }
 }
 
 /**
- * Check a composed wire, sign it, broadcast it and wait for confirmation. The
- * wire is parsed BEFORE the wallet is asked to sign, so a malformed answer never
- * reaches a prompt. Preflight is skipped: web3.js 1.x cannot simulate a v1
+ * The Ed25519 verifier instruction must vouch for the payer's key over this
+ * call's authorization: num_signatures 1, one 14-byte offsets header, every
+ * part inside this instruction, the key equal to the payer, and the message
+ * either the readable envelope or the bare hash (the proxy accepts both).
+ */
+function checkAuthorization(data: Uint8Array, payer: PublicKey, hash: Uint8Array): void {
+  const bad = (why: string) => new Error(`composed transaction: the Ed25519 instruction ${why}`);
+  if (data.length < 2 + ED25519_OFFSETS_HEADER || data[0] !== 1) throw bad("must carry exactly one signature");
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const [sigOff, sigIx, keyOff, keyIx, msgOff, msgLen, msgIx] = Array.from({ length: 7 }, (_, i) => view.getUint16(2 + 2 * i, true));
+  if (sigIx !== SAME_INSTRUCTION || keyIx !== SAME_INSTRUCTION || msgIx !== SAME_INSTRUCTION) {
+    throw bad("reads its key, signature or message from another instruction");
+  }
+  if (keyOff! + 32 > data.length || sigOff! + 64 > data.length || msgOff! + msgLen! > data.length) throw bad("points outside its own data");
+  if (!sameBytes(data.subarray(keyOff!, keyOff! + 32), payer.toBytes())) throw bad("verifies a key that is not the payer's");
+  const message = data.subarray(msgOff!, msgOff! + msgLen!);
+  if (!sameBytes(message, ed25519AuthMessage(hash)) && !sameBytes(message, hash)) {
+    throw bad("verifies a message other than this call's authorization");
+  }
+}
+
+/**
+ * Check a composed wire against what was asked for, sign it, broadcast it and
+ * wait for confirmation. The wire is parsed and checked BEFORE the wallet is
+ * asked to sign, so a malformed or unexpected answer never reaches a prompt. Preflight is skipped: web3.js 1.x cannot simulate a v1
  * transaction, and the chain validates it anyway.
  */
-async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array): Promise<string> {
+async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uint8Array, expected: Expected): Promise<string> {
   const { connection } = deps;
   const { message } = splitV1Wire(wire);
-  parseV1Message(message);
+  checkComposed(parseV1Message(message), signer.payer, new PublicKey(deps.programId), expected);
   const txSig = await signer.signV1Wire(wire);
   if (!(txSig instanceof Uint8Array) || txSig.length !== SIGNATURE_BYTES) {
     throw new Error(
