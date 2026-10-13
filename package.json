@@ -1,7 +1,7 @@
 {
   "name": "@rome-protocol/sdk",
-  "version": "0.2.1",
-  "description": "Rome Protocol TypeScript SDK — submitRomeTx (the canonical Rome EVM write wrapper), the Solana lane (submitRomeTxSolanaLane — a Solana wallet driving your EVM app), fee/gas sizing, external-authority PDA + ATA derivation, and CPI calldata encoding for building on Rome (EVM chains that run on Solana).",
+  "version": "0.3.0",
+  "description": "Rome Protocol TypeScript SDK — submitRomeTx (the canonical Rome EVM write wrapper), the Solana lane (submitRomeTxSolanaLane, and the v1 lane submitRomeTxV1 — a Solana wallet driving your EVM app), fee/gas sizing, external-authority PDA + ATA derivation, and CPI calldata encoding for building on Rome (EVM chains that run on Solana).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
