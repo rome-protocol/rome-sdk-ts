@@ -279,7 +279,11 @@ export interface SolanaLaneV1Result {
   route: "atomic" | "relay";
   /** The Solana signature; atomic route only. */
   signature?: string;
-  /** `null` when the receipt did not appear in time. */
+  /**
+   * `null` when the receipt did not appear in time. A reverted EVM call does
+   * not throw on the relay route: it resolves with `receipt.status === "0x0"`,
+   * so check `receipt?.status === "0x1"` before treating the call as done.
+   */
   receipt: TransactionReceiptLike | null;
 }
 
@@ -323,7 +327,9 @@ async function prepare(deps: SolanaLaneV1Deps, call: V1Call) {
  *
  * When the composer refuses the call, it is relayed through the proxy with the
  * same authorization signature (no second prompt); pass `relayOnRefusal: false`
- * to get the refusal as an error instead.
+ * to get the refusal as an error instead. That option only controls what this
+ * function does: the proxy holds the authorization signature and can run the
+ * payload by either route, up to `gasLimit × maxFeePerGas`.
  */
 export async function submitRomeTxV1(
   deps: SolanaLaneV1Deps,
