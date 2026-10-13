@@ -213,14 +213,18 @@ export function parseV1Message(message: Uint8Array): ParsedV1Message {
 }
 
 // ------------------------------------------------------------ proxy calls ---
-export interface ComposeV1Result {
+interface ComposeV1Result {
   recentBlockhash: string;
   /** Base64 v1 wire with a zero signature slot. */
   transaction: string;
 }
 
-/** Ask the proxy to emulate the call and compose the atomic v1 transaction. */
-export async function composeAtomicV1(
+/**
+ * Ask the proxy to emulate the call and compose the atomic v1 transaction. Not
+ * exported: the answer is untrusted until `signAndSend` has checked it, and a
+ * caller that signed it directly would skip that check.
+ */
+async function composeAtomicV1(
   proxyUrl: string,
   unsignedRlp: Hex,
   payer: PublicKey,

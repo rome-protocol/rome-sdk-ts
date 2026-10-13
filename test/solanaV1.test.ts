@@ -732,3 +732,10 @@ describe("composed transaction check", () => {
     });
   });
 });
+
+describe("public surface", () => {
+  it("does not export a way to fetch a composed transaction without the check", async () => {
+    const root = await import("../src/index.js");
+    expect(root).not.toHaveProperty("composeAtomicV1");
+  });
+});
