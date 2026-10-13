@@ -13,6 +13,10 @@
  *   address + `DoTxUnsigned`), with account discovery, ComputeBudget, and the
  *   treasure wallet handled for you.
  *
+ * - `solanaV1` — the v1 SOLANA LANE: `submitRomeTxV1`, one proxy-composed Solana v1
+ *   transaction signed twice by the wallet (authorization + transaction), with relay
+ *   on refusal and `fundSyntheticGas`. `solana` stays as the legacy-transaction path.
+ *
  * The bridge client is a separate entry point: `@rome-protocol/sdk/bridge`.
  * Solidity interfaces live in the public `rome-solidity` repo.
  */
@@ -24,3 +28,4 @@ export * from "./abis.js";
 export * from "./selectors.js";
 export * from "./constants.js";
 export * from "./solana.js";
+export * from "./solanaV1.js";

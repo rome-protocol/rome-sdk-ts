@@ -32,6 +32,7 @@ import { keccak256, serializeTransaction, hexToBytes, encodeFunctionData, type H
 import { DO_TX_UNSIGNED_TAG, ACTIVATE_ATA_TAG } from "./constants.js";
 import { deriveAuthorityPda, pubkeyToBytes32 } from "./pda.js";
 import { padRomeGas, buildRome1559Fees, DEFAULT_ROME_GAS_FALLBACK } from "./write.js";
+import { jsonRpc } from "./jsonRpc.js";
 
 function pk(programId: PublicKey | string): PublicKey {
   return typeof programId === "string" ? new PublicKey(programId) : programId;
@@ -237,17 +238,6 @@ export interface FeeFields {
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
   gasLimit: bigint;
-}
-
-async function jsonRpc<T>(rpcUrl: string, method: string, params: unknown[], fetchImpl: typeof fetch): Promise<T> {
-  const res = await fetchImpl(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = (await res.json()) as { result?: T; error?: { code: number; message: string } };
-  if (json.error) throw new Error(`${method}: ${json.error.message} (code ${json.error.code})`);
-  return json.result as T;
 }
 
 /**

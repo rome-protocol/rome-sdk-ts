@@ -14,7 +14,7 @@ TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM 
 Repo-first — install from the repo, pinned to a release tag (npm publish is deferred until demand):
 
 ```
-npm install github:rome-protocol/rome-sdk-ts#v0.2.1 viem @solana/web3.js @solana/spl-token
+npm install github:rome-protocol/rome-sdk-ts#v0.3.0 viem @solana/web3.js @solana/spl-token
 ```
 
 Imports use the package name (`@rome-protocol/sdk`) unchanged.
@@ -69,6 +69,41 @@ The wallet **signs the Solana transaction and sends it to the Solana RPC** (the 
 
 `submitRomeTxSolanaLane` also handles what a hand-built transaction gets wrong: the **ComputeBudget** (raised CU + heap), the **treasure wallet** account, and emulating account discovery **with `value`** (so value-dependent storage slots are allocated). The user needs a little **SOL** (tx fee) + **USDC** (SPL) in their wallet; there is no faucet. Full walkthrough: **Build a dual-lane app** in the [docs](https://docs.rome.builders).
 
+### The v1 Solana lane
+
+`submitRomeTxV1` is the newer Solana lane. The proxy composes **one Solana v1 transaction** (up to 4096 bytes and 64 accounts, no lookup table) for your EVM call, and the wallet signs it. There is no ComputeBudget, treasure wallet or account list to assemble on the client. The same key signs **twice**: first a readable authorization message that the wallet shows as `Rome authorization\n0x<hash>` (the `<hash>` is the EVM transaction hash), then the Solana transaction itself. The app sends the signed transaction to the Solana RPC.
+
+```ts
+import { submitRomeTxV1 } from "@rome-protocol/sdk";
+
+const { route, signature, hash, receipt } = await submitRomeTxV1(
+  { connection, proxyUrl, programId, chainId, signer: keypair }, // programId: the chain's Rome EVM program; signer: a Keypair, or any LaneSigner
+  { to: contract, data: encodeFunctionData({ abi, functionName: "deposit" }) },
+);
+```
+
+The authorization message is plain text, so any wallet that offers `solana:signMessage` can sign it. The transaction signature is different: `signV1Wire` receives the raw v1 wire and must return **only the 64-byte ed25519 signature** for its empty signature slot, which the SDK checks before it broadcasts. A `Keypair` does this directly. Wallet Standard's `solana:signTransaction` returns the whole signed wire, so slice the signature off its end. Wallet code that first decodes the transaction with web3.js 1.x or `@solana/kit` may not recognise the v1 format, so check your wallet's `solana:signTransaction` against a v1 wire before relying on it:
+
+```ts
+const signer: LaneSigner = {
+  payer: new PublicKey(account.address),
+  async signAuthHash(message) {
+    const [{ signature }] = await wallet.features["solana:signMessage"].signMessage({ account, message });
+    return signature;
+  },
+  signV1Wire: async (wire) => {
+    const [{ signedTransaction }] = await wallet.features["solana:signTransaction"].signTransaction({ account, transaction: wire });
+    return signedTransaction.slice(-64);
+  },
+};
+```
+
+Before the wallet is asked for the second signature, the SDK checks the composed transaction against what you asked for, and throws if anything differs: one signer with the payer at account 0, no priority fee, instructions only for `programId` and the Ed25519 verifier, exactly one Rome instruction carrying your payload byte for byte, and an Ed25519 instruction that vouches for the payer over this call's authorization. The check covers which programs run and the payload they carry; choosing the right accounts for that payload is still the Rome program's job on chain. `fundSyntheticGas` is held to the same standard (one deposit instruction for your chain, to your own synthetic address, for the amount you asked). The parser also refuses config-mask bits it does not know on purpose, so a proxy upgrade that introduces a new bit needs an SDK update.
+
+If the composer refuses a call because it does not fit one atomic transaction, `submitRomeTxV1` hands it to the proxy with the **same** authorization signature (no second prompt), and the result has `route: "relay"` and no Solana `signature`. Pass `relayOnRefusal: false` to get the refusal as an error, or call `relayV1` yourself. `relayOnRefusal: false` only changes what the SDK does: the authorization signature is already with the proxy, which can run that one payload by either route, up to `gasLimit × maxFeePerGas`. A relayed call that reverted on the EVM side does not throw: it resolves with `receipt.status === "0x0"`, so check `receipt?.status === "0x1"`. A relayed call is paid for in the chain's native gas token, so the sender needs a balance: `fundSyntheticGas(deps, amountWei)` tops it up from the wallet's own token account of the chain's gas token (USDC on Hadrian and Rubicon; the wallet needs some of it, plus SOL for the Solana fee). `amountWei` is in the chain's 18-decimal wei and must be a multiple of 10^12. The relay needs at least `gasLimit × maxFeePerGas` of balance.
+
+`submitRomeTxV1` does not provision a new synthetic address. `provisionSynthetic` from the legacy lane still does that one-time `create_pda` step. `submitRomeTxSolanaLane` above remains the legacy-transaction path. A runnable script is in [`examples/solana-lane-v1.mjs`](./examples/solana-lane-v1.mjs).
+
 ## Bridging (`@rome-protocol/sdk/bridge`)
 
 ```ts
@@ -97,6 +132,10 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `u64Le` / `u8` | little-endian primitives for inner Solana instruction data |
 | `submitRomeTxSolanaLane(deps, call)` | the Solana lane — a Solana wallet drives your EVM contract |
 | `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit |
+| `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
+| `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
+| `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
+| `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 wire helpers (the composed transaction is fetched and checked inside `submitRomeTxV1`, never handed back unchecked) |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
 | `PRECOMPILE_ADDRESSES` / `CPI_ABI` / `HELPER_ABI` / `WITHDRAW_ABI` / `SYSTEM_ABI` / `SELECTORS` / `EXTERNAL_AUTHORITY_SEED` | precompile addresses, ABIs, and verified selectors |
