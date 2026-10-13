@@ -11,7 +11,7 @@
  *
  * A call too large for one atomic transaction is refused by the composer; the
  * proxy can then relay it with the same authorization signature. A sender short
- * of native gas can top up from the wallet's SOL with {@link fundSyntheticGas}.
+ * of native gas can top up from the wallet's gas-token account with {@link fundSyntheticGas}.
  *
  * `submitRomeTxSolanaLane` (`./solana.ts`) is the older legacy-transaction path.
  * The one-time `create_pda` step is still `provisionSynthetic` from that module.
@@ -368,7 +368,8 @@ async function relayPrepared(
 }
 
 /**
- * Top up the sender's native gas balance from the wallet's SOL. `amountWei` is
+ * Top up the sender's native gas balance from the wallet's own token account of
+ * the chain's gas token (USDC on Hadrian and Rubicon). `amountWei` is
  * in the chain's wei and must be a multiple of 10^12 (the proxy refuses any
  * other amount). The wallet signs one plain v1 transaction.
  */

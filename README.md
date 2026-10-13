@@ -14,7 +14,7 @@ TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM 
 Repo-first — install from the repo, pinned to a release tag (npm publish is deferred until demand):
 
 ```
-npm install github:rome-protocol/rome-sdk-ts#v0.2.1 viem @solana/web3.js @solana/spl-token
+npm install github:rome-protocol/rome-sdk-ts#v0.3.0 viem @solana/web3.js @solana/spl-token
 ```
 
 Imports use the package name (`@rome-protocol/sdk`) unchanged.
@@ -95,7 +95,7 @@ const signer: LaneSigner = {
 };
 ```
 
-If the composer refuses a call because it does not fit one atomic transaction, `submitRomeTxV1` hands it to the proxy with the **same** authorization signature (no second prompt), and the result has `route: "relay"` and no Solana `signature`. Pass `relayOnRefusal: false` to get the refusal as an error, or call `relayV1` yourself. A relayed call is paid for in the chain's native gas token, so the sender needs a balance: `fundSyntheticGas(deps, amountWei)` tops it up from the wallet's SOL (`amountWei` must be a multiple of 10^12).
+If the composer refuses a call because it does not fit one atomic transaction, `submitRomeTxV1` hands it to the proxy with the **same** authorization signature (no second prompt), and the result has `route: "relay"` and no Solana `signature`. Pass `relayOnRefusal: false` to get the refusal as an error, or call `relayV1` yourself. A relayed call is paid for in the chain's native gas token, so the sender needs a balance: `fundSyntheticGas(deps, amountWei)` tops it up from the wallet's own token account of the chain's gas token (USDC on Hadrian and Rubicon; the wallet needs some of it, plus SOL for the Solana fee). `amountWei` is in the chain's 18-decimal wei and must be a multiple of 10^12. The relay needs at least `gasLimit × maxFeePerGas` of balance.
 
 `submitRomeTxV1` does not provision a new synthetic address. `provisionSynthetic` from the legacy lane still does that one-time `create_pda` step. `submitRomeTxSolanaLane` above remains the legacy-transaction path. A runnable script is in [`examples/solana-lane-v1.mjs`](./examples/solana-lane-v1.mjs).
 
