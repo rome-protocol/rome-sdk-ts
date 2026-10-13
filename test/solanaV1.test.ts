@@ -278,6 +278,34 @@ describe("submitRomeTxV1", () => {
     expect(conn.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it("keeps polling through a status error after the send, and still returns the signature", async () => {
+    const { conn, asConnection } = fakeConnection();
+    conn.getSignatureStatuses
+      .mockRejectedValueOnce(new Error("429 too many requests"))
+      .mockResolvedValueOnce({ value: [null] } as never);
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed, eth_getTransactionReceipt: () => receipt });
+    const res = await submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp }, call);
+    expect(res.signature).toBe("SOLSIG");
+    expect(conn.getSignatureStatuses.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("names the Solana signature when polling keeps failing until the deadline", async () => {
+    const { conn, asConnection } = fakeConnection();
+    conn.getSignatureStatuses.mockRejectedValue(new Error("rpc down"));
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp, confirmTimeoutMs: 20 }, call),
+    ).rejects.toThrow(/SOLSIG[\s\S]*rpc down/);
+  });
+
+  it("names the Solana signature when the transaction fails", async () => {
+    const { asConnection } = fakeConnection({ err: { InstructionError: [1, "Custom"] }, confirmationStatus: "confirmed" });
+    stubProxy({ rome_composeUnsignedAtomicV1: () => composed });
+    await expect(
+      submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, chainId: CHAIN_ID, signer: kp }, call),
+    ).rejects.toThrow(/SOLSIG/);
+  });
+
   it("throws when the Solana transaction never confirms", async () => {
     const { asConnection } = fakeConnection(null);
     stubProxy({ rome_composeUnsignedAtomicV1: () => composed });

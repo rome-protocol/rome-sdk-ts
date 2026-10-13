@@ -410,17 +410,29 @@ async function signAndSend(deps: SolanaLaneV1Deps, signer: LaneSigner, wire: Uin
 
   const confirmTimeoutMs = deps.confirmTimeoutMs ?? 90_000;
   const deadline = Date.now() + confirmTimeoutMs;
+  let lastPollError: unknown;
   for (;;) {
-    const status = (await connection.getSignatureStatuses([signature])).value[0];
-    if (status?.err) {
-      const logs = await txLogs(connection, signature, deps.fetchImpl ?? fetch);
-      throw new Error(`Solana transaction failed: ${JSON.stringify(status.err)}${logs ? `\n${logs}` : ""}`);
+    try {
+      const status = (await connection.getSignatureStatuses([signature])).value[0];
+      if (status?.err) {
+        const logs = await txLogs(connection, signature, deps.fetchImpl ?? fetch);
+        throw new TxFailed(`Solana transaction ${signature} failed: ${JSON.stringify(status.err)}${logs ? `\n${logs}` : ""}`);
+      }
+      if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
+      lastPollError = undefined;
+    } catch (err) {
+      if (err instanceof TxFailed) throw err;
+      lastPollError = err; // the transaction is already sent: keep polling rather than lose its signature
     }
-    if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
-    if (Date.now() > deadline) throw new Error(`Solana transaction ${signature} not confirmed within ${confirmTimeoutMs} ms`);
+    if (Date.now() > deadline) {
+      const why = lastPollError ? ` (last status error: ${lastPollError instanceof Error ? lastPollError.message : String(lastPollError)})` : "";
+      throw new Error(`Solana transaction ${signature} not confirmed within ${confirmTimeoutMs} ms${why}`);
+    }
     await sleep(Math.min(1000, Math.max(deadline - Date.now(), 1)));
   }
 }
+
+class TxFailed extends Error {}
 
 /**
  * The transaction's log lines, or `null` on any failure. Read with a plain
