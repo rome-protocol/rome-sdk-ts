@@ -104,6 +104,19 @@ If the composer refuses a call because it does not fit one atomic transaction, `
 
 `submitRomeTxV1` does not provision a new synthetic address. `provisionSynthetic` from the legacy lane still does that one-time `create_pda` step. `submitRomeTxSolanaLane` above remains the legacy-transaction path. A runnable script is in [`examples/solana-lane-v1.mjs`](./examples/solana-lane-v1.mjs).
 
+#### Plain Solana instructions as a v1 transaction
+
+Some steps around a lane call are ordinary Solana instructions with no EVM call in them: the fund leg, or creating the wallet's token account before a sweep. `submitSolanaInstructionsV1` sends those as a v1 transaction too, signed through the same `signV1Wire`, with no proxy involved:
+
+```ts
+import { buildFundLeg, submitSolanaInstructionsV1 } from "@rome-protocol/sdk";
+
+const ixs = buildFundLeg({ programId, chainId, mint, amount, wallet: keypair.publicKey, synthetic });
+const { signature } = await submitSolanaInstructionsV1(ixs, { connection, signer: keypair });
+```
+
+The wallet is the only signer. A v1 message carries the compute-unit limit in its config rather than in a ComputeBudget instruction, so pass `computeUnitLimit` instead of adding one (a ComputeBudget instruction is refused). A message may hold up to 64 account keys and the signed transaction up to 4096 bytes; the SDK throws before signing if it would not fit. `compileV1Message` is the underlying compiler, the inverse of `parseV1Message`.
+
 ## Bridging (`@rome-protocol/sdk/bridge`)
 
 ```ts
@@ -131,7 +144,9 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `encodeInvoke` / `encodeInvokeSigned` / `CPI_PRECOMPILE` | CPI calldata encoders |
 | `u64Le` / `u8` | little-endian primitives for inner Solana instruction data |
 | `submitRomeTxSolanaLane(deps, call)` | the Solana lane — a Solana wallet drives your EVM contract |
-| `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit |
+| `buildFundLeg` / `buildSweepLeg` / `submitSolanaInstructions` | value-in (ActivateAta) / value-out (transfer_spl) / native-instruction submit (legacy transaction) |
+| `submitSolanaInstructionsV1(ixs, deps)` | send plain instructions (the fund leg, a token-account creation) as one v1 transaction, signed by your `Keypair` or `LaneSigner` |
+| `compileV1Message` | compile plain instructions into a v1 message: the inverse of `parseV1Message` |
 | `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
 | `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |

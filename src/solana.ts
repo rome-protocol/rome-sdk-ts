@@ -521,7 +521,10 @@ export function buildFundLeg(params: {
   return [ensureSynthAtaIx, activateIx];
 }
 
-/** Submit native (non-DoTxUnsigned) instructions in one wallet-signed Solana tx (e.g. the fund leg). */
+/**
+ * Submit native (non-DoTxUnsigned) instructions in one wallet-signed Solana tx (e.g. the fund leg).
+ * This sends a legacy transaction; `submitSolanaInstructionsV1` sends a v1 transaction and is preferred.
+ */
 export async function submitSolanaInstructions(
   instructions: TransactionInstruction[],
   deps: { connection: Connection; feePayer: PublicKey; signTransaction: (tx: Transaction) => Promise<Transaction> },
@@ -572,7 +575,7 @@ export interface SweepLeg {
  * withdraw / borrow / claim), push `amount` of `mint` back to the user's own
  * wallet ATA via `HelperProgram.transfer_spl`, so the synthetic holds nothing at
  * rest. Wire it as: submit `ensureWalletAtaIx` (native, via
- * {@link submitSolanaInstructions}), then
+ * {@link submitSolanaInstructions}, or `submitSolanaInstructionsV1` for a v1 transaction), then
  * `submitRomeTxSolanaLane({ to: helperTo, data: calldata, extraAccounts })`.
  */
 export function buildSweepLeg(params: {

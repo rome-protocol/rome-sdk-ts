@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { describe, it, expect, vi } from "vitest";
+import { ed25519 } from "@noble/curves/ed25519";
+import { ComputeBudgetProgram, type Connection, Keypair, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { base58 } from "@scure/base";
 import { compileV1Message } from "../src/v1Message.js";
-import { parseV1Message, type ParsedV1Message } from "../src/solanaV1.js";
+import { parseV1Message, splitV1Wire, submitSolanaInstructionsV1, type LaneSigner, type ParsedV1Message } from "../src/solanaV1.js";
 import { buildActivateAtaInstruction } from "../src/solana.js";
 
 const key = (n: number) => Keypair.fromSeed(Uint8Array.from({ length: 32 }, () => n)).publicKey;
@@ -165,5 +166,66 @@ describe("compileV1Message", () => {
       expect(() => compile(big)).toThrow(/4[0-9]{3}.*4096/);
       expect(() => compile([ix(PROGRAM, [], Buffer.alloc(3_900))])).not.toThrow();
     });
+  });
+});
+
+describe("submitSolanaInstructionsV1", () => {
+  const kp = Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, i) => i + 7));
+  const transfer = SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: key(4), lamports: 99n });
+
+  const fakeConnection = () => {
+    const sent: { wire: Uint8Array; options: unknown }[] = [];
+    const connection = {
+      getLatestBlockhash: vi.fn(async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1 })),
+      sendRawTransaction: vi.fn(async (wire: Uint8Array, options: unknown) => {
+        sent.push({ wire, options });
+        return base58.encode(wire.slice(-64));
+      }),
+      getSignatureStatuses: vi.fn(async () => ({ value: [{ confirmationStatus: "confirmed", err: null }] })),
+    };
+    return { connection: connection as unknown as Connection, mocks: connection, sent };
+  };
+
+  it("signs the compiled message, checks the signature, and sends message then signature without preflight", async () => {
+    const { connection, mocks, sent } = fakeConnection();
+    const { signature } = await submitSolanaInstructionsV1([transfer], { connection, signer: kp, computeUnitLimit: 50_000 });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.options).toEqual({ skipPreflight: true });
+    const wire = sent[0]!.wire;
+    const message = wire.slice(0, -64);
+    const parsed = parseV1Message(message);
+    expect(parsed.accountKeys[0]!.equals(kp.publicKey)).toBe(true);
+    expect(parsed.computeUnitLimit).toBe(50_000);
+    expect(base58.encode(message.slice(8, 40))).toBe(BLOCKHASH);
+    expect(ed25519.verify(wire.slice(-64), message, kp.publicKey.toBytes())).toBe(true);
+    expect(signature).toBe(base58.encode(wire.slice(-64)));
+    expect(mocks.getLatestBlockhash).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a signature over different bytes before anything is sent", async () => {
+    const { connection, mocks } = fakeConnection();
+    const signer: LaneSigner = {
+      payer: kp.publicKey,
+      signAuthHash: async () => new Uint8Array(64),
+      signV1Wire: async (wire) => ed25519.sign(splitV1Wire(wire).message.slice(1), kp.secretKey.slice(0, 32)),
+    };
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer })).rejects.toThrow(/different transaction/);
+    expect(mocks.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses a signature of the wrong length before anything is sent", async () => {
+    const { connection, mocks } = fakeConnection();
+    const signer: LaneSigner = { payer: kp.publicKey, signAuthHash: async () => new Uint8Array(64), signV1Wire: async (wire) => wire };
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer })).rejects.toThrow(/64-byte signature/);
+    expect(mocks.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("names the signature when the confirmation times out", async () => {
+    const { connection, mocks } = fakeConnection();
+    mocks.getSignatureStatuses.mockResolvedValue({ value: [null] });
+    await expect(submitSolanaInstructionsV1([transfer], { connection, signer: kp, confirmTimeoutMs: 20 })).rejects.toThrow(
+      /Solana transaction [1-9A-HJ-NP-Za-km-z]{80,90} not confirmed within 20 ms/,
+    );
   });
 });
