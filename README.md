@@ -14,7 +14,7 @@ TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM 
 Repo-first — install from the repo, pinned to a release tag (npm publish is deferred until demand):
 
 ```
-npm install github:rome-protocol/rome-sdk-ts#v0.3.0 viem @solana/web3.js @solana/spl-token
+npm install github:rome-protocol/rome-sdk-ts#v0.4.0 viem @solana/web3.js @solana/spl-token
 ```
 
 Imports use the package name (`@rome-protocol/sdk`) unchanged.
