@@ -153,7 +153,9 @@ const hash = await sendMessageFromEvm(walletClient, { bridge, message });
 const sent = await sendMessageFromSolanaWallet(laneDeps, { bridge, message });
 
 // The leaf the bridge added, from the receipt; `originAddress` is what the receiver sees as the sender.
-const [leaf] = messageLeavesOf(receipt, bridge);
+// A revert on the relay route does not throw: it comes back as a receipt with status 0x0, so check it first.
+if (sent.receipt?.status !== "0x1") throw new Error("the send did not succeed");
+const [leaf] = messageLeavesOf(sent.receipt, bridge); // a lane result's receipt, or a viem receipt
 messageOriginOf(solanaWalletPublicKey); // the originAddress for a Solana wallet or PDA sender
 
 // On the destination, with a proof for the leaf (`MessageProof` has `claimMessage`'s argument names):
@@ -162,7 +164,7 @@ if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount,
 }
 ```
 
-- Value out of Rome moves only in whole units of `ROME_WETH_UNIT` (1e9 wei). With `weth: true`, `value` is the WETH amount for `bridgeMessageWETH` and a send that is not a whole multiple throws before anything is sent; the Solana sender takes `amountWETH`. A plain `bridgeMessage` carries no value on a chain whose gas token is not ETH.
+- Value out of Rome moves only in whole units of `ROME_WETH_UNIT` (1e9 wei). With `weth: true`, `value` is the WETH amount for `bridgeMessageWETH` and a send that is not a whole multiple throws before anything is sent; the Solana sender takes `amountWETH`. On a Rome chain a WETH send needs an `approve` first: call `approve` on the adapter's wrapper (`adapter.wrapper()`, the adapter being the bridge's `WETHToken()`; 9 decimals) with the adapter as spender for at least `amount / ROME_WETH_UNIT`, as its own call, then send; without it the send reverts, and on the relay route that comes back as a receipt with status `0x0`, not a throw. Value into a Rome chain arrives only in whole units; the remainder below one unit (under 1 gwei) is lost. A plain `bridgeMessage` carries no value on a chain whose gas token is not ETH.
 - `forceUpdateGlobalExitRoot` defaults to `true`, so a lone message is claimable without waiting for another deposit.
 - Set `rome: true` on `sendMessageFromEvm` / `claimMessageFromEvm` for a bridge on a Rome chain: the call goes through `submitRomeTx` (needs a wallet that signs over JSON-RPC, such as a browser wallet).
 - `messageLeavesOf(receipt, bridge, { includeTokens: true })` also returns token leaves.

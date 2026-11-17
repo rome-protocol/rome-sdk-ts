@@ -94,7 +94,8 @@ export interface SendMessageOptions {
   message: BridgeMessage;
   /**
    * Without `weth`: native value sent with `bridgeMessage`, the caller's choice (on a chain whose gas token is not ETH the bridge reverts a send that carries value).
-   * With `weth: true`: the amount of the bridge's WETH to carry, in wei; it must be a whole multiple of {@link ROME_WETH_UNIT}.
+   * With `weth: true`: the amount of the bridge's WETH to carry, in wei; it must be a whole multiple of {@link ROME_WETH_UNIT} (Rome's rule: its WETH adapter moves whole 9-decimal units, so a bridge on Rome refuses any other amount; value into a Rome chain arrives only in whole units, the remainder below one unit is lost).
+   * On a Rome chain the send first needs an `approve`: call `approve` on the adapter's wrapper (`adapter.wrapper()`, 9 decimals, the adapter being the bridge's `WETHToken()`) with the adapter as spender for at least `value / ROME_WETH_UNIT`. Without it the send reverts, and on the relay route the revert does not throw: it comes back as a receipt with status `0x0`.
    */
   value?: bigint;
   /** Use `bridgeMessageWETH`, with `value` as the WETH amount; no native value is sent. */
@@ -116,6 +117,7 @@ export async function sendMessageFromEvm(walletClient: WalletClient, o: SendMess
 /**
  * Send a bridge message from a Solana wallet as one call through `submitRomeTxV1` (atomic, relayed when the proxy refuses it atomic).
  * With `amountWETH` the message carries that much of the bridge's WETH (a whole multiple of {@link ROME_WETH_UNIT}); otherwise it carries none.
+ * On a Rome chain the WETH send needs an `approve` first: call `approve` on the adapter's wrapper (`adapter.wrapper()`, the adapter being the bridge's `WETHToken()`) with the adapter as spender for at least `amountWETH / ROME_WETH_UNIT`, as its own call, before this one. Without it the send reverts, and on the relay route the revert does not throw: check `receipt?.status === "0x1"`.
  */
 export async function sendMessageFromSolanaWallet(
   deps: SolanaLaneV1Deps,
@@ -152,14 +154,16 @@ export interface MessageLeaf {
   metadata: Hex;
 }
 
-interface ReceiptLike {
-  logs: readonly { address: string; topics: readonly string[]; data: string }[];
-}
+type LogLike = { address: string; topics: readonly string[]; data: string };
+
+/** A viem `TransactionReceipt`, or the receipt of a Solana lane result (`SolanaLaneV1Result.receipt`, which may carry no `logs`). */
+export type ReceiptLike = { logs?: unknown } | null | undefined;
 
 /** The leaves a transaction added to `bridge`, from its receipt's BridgeEvent logs, in log order. Message leaves only, unless `includeTokens`. */
 export function messageLeavesOf(receipt: ReceiptLike, bridge: Hex, opts: { includeTokens?: boolean } = {}): MessageLeaf[] {
   const out: MessageLeaf[] = [];
-  for (const log of receipt.logs) {
+  const logs = receipt && Array.isArray(receipt.logs) ? (receipt.logs as readonly LogLike[]) : [];
+  for (const log of logs) {
     if (log.address.toLowerCase() !== bridge.toLowerCase()) continue;
     let ev;
     try {

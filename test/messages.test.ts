@@ -17,7 +17,7 @@ import {
   sendMessageFromSolanaWallet,
   type MessageProof,
 } from "../src/messages.js";
-import { submitRomeTxV1, type SolanaLaneV1Deps } from "../src/solanaV1.js";
+import { submitRomeTxV1, type SolanaLaneV1Deps, type SolanaLaneV1Result } from "../src/solanaV1.js";
 import encodeFixture from "./fixtures/messages-encode.json" with { type: "json" };
 import claimFixture from "./fixtures/messages-claim.json" with { type: "json" };
 import receiptFixture from "./fixtures/messages-receipt.json" with { type: "json" };
@@ -142,6 +142,14 @@ describe("messageLeavesOf", () => {
 describe("Solana senders", () => {
   const deps = { chainId: 1 } as unknown as SolanaLaneV1Deps;
   const lane = { hash: "0xaa", from: RECEIVER, route: "atomic" as const, receipt: null };
+
+  it("messageLeavesOf takes a lane result's receipt (no logs field), null, or a receipt that has logs", () => {
+    const laneReceipt: NonNullable<SolanaLaneV1Result["receipt"]> = { status: "0x1", transactionHash: "0xaa" };
+    expect(messageLeavesOf(laneReceipt, BRIDGE)).toEqual([]);
+    expect(messageLeavesOf(null, BRIDGE)).toEqual([]);
+    const withLogs: NonNullable<SolanaLaneV1Result["receipt"]> = { status: "0x1", logs: receiptFixture.receipt.logs };
+    expect(messageLeavesOf(withLogs, BRIDGE)).toHaveLength(1);
+  });
 
   it("sendMessageFromSolanaWallet passes the exact bridgeMessage calldata and the bridge to submitRomeTxV1, and returns the lane result", async () => {
     submitMock.mockResolvedValue(lane);
