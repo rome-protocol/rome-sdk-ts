@@ -157,7 +157,7 @@ export interface MessageLeaf {
 type LogLike = { address: string; topics: readonly string[]; data: string };
 
 /** A viem `TransactionReceipt`, or the receipt of a Solana lane result (`SolanaLaneV1Result.receipt`, which may carry no `logs`). */
-export type ReceiptLike = { logs?: unknown } | null | undefined;
+export type ReceiptLike = { logs?: unknown; [key: string]: unknown } | null | undefined;
 
 /** The leaves a transaction added to `bridge`, from its receipt's BridgeEvent logs, in log order. Message leaves only, unless `includeTokens`. */
 export function messageLeavesOf(receipt: ReceiptLike, bridge: Hex, opts: { includeTokens?: boolean } = {}): MessageLeaf[] {
