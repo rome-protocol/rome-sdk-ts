@@ -17,7 +17,8 @@
  *   transaction signed twice by the wallet (authorization + transaction), with relay
  *   on refusal and `fundSyntheticGas`. `solana` stays as the legacy-transaction path.
  *
- * The bridge client is a separate entry point: `@rome-protocol/sdk/bridge`.
+ * The bridge client is a separate entry point: `@rome-protocol/sdk/bridge`. So are the
+ * AggLayer messages (send, read the leaf, claim): `@rome-protocol/sdk/messages`.
  * Solidity interfaces live in the public `rome-solidity` repo.
  */
 export * from "./write.js";

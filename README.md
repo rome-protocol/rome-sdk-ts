@@ -134,6 +134,40 @@ await registerTransfer({ quote, step1TxHash: hashes[step1BindingTxIndex(items)] 
 
 Quote-first: the bridge API owns route + calldata; the client signs the quote's `unsignedTxs` verbatim and (for the trustless gas path) signs an EIP-712 settle authorization. Chain / token / contract data comes from [`@rome-protocol/registry`](https://github.com/rome-protocol/rome-registry).
 
+## AggLayer messages (`@rome-protocol/sdk/messages`)
+
+Send a message from one AggLayer chain to a contract on another, and claim one that arrived. This entry is the on-chain half: it builds the calldata, sends it from an EVM wallet or a Solana wallet, reads the leaf from the receipt, and claims with a proof you hand it.
+
+```ts
+import {
+  sendMessageFromEvm, sendMessageFromSolanaWallet, messageLeavesOf, messageOriginOf,
+  claimMessageFromEvm, isMessageClaimed, ROME_WETH_UNIT,
+} from "@rome-protocol/sdk/messages";
+
+const message = { destinationNetwork: 1, destinationAddress: receiver, metadata: "0x1234" };
+
+// From an EVM wallet (a viem WalletClient): returns the transaction hash.
+const hash = await sendMessageFromEvm(walletClient, { bridge, message });
+
+// From a Solana wallet, through the v1 lane (relayed when the proxy refuses it atomic):
+const sent = await sendMessageFromSolanaWallet(laneDeps, { bridge, message });
+
+// The leaf the bridge added, from the receipt; `originAddress` is what the receiver sees as the sender.
+const [leaf] = messageLeavesOf(receipt, bridge);
+messageOriginOf(solanaWalletPublicKey); // the originAddress for a Solana wallet or PDA sender
+
+// On the destination, with a proof for the leaf (`MessageProof` has `claimMessage`'s argument names):
+if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount, leaf.originNetwork))) {
+  await claimMessageFromEvm(destinationWalletClient, destinationBridge, proof);
+}
+```
+
+- Value out of Rome moves only in whole units of `ROME_WETH_UNIT` (1e9 wei). With `weth: true`, `value` is the WETH amount for `bridgeMessageWETH` and a send that is not a whole multiple throws before anything is sent; the Solana sender takes `amountWETH`. A plain `bridgeMessage` carries no value on a chain whose gas token is not ETH.
+- `forceUpdateGlobalExitRoot` defaults to `true`, so a lone message is claimable without waiting for another deposit.
+- Set `rome: true` on `sendMessageFromEvm` / `claimMessageFromEvm` for a bridge on a Rome chain: the call goes through `submitRomeTx` (needs a wallet that signs over JSON-RPC, such as a browser wallet).
+- `messageLeavesOf(receipt, bridge, { includeTokens: true })` also returns token leaves.
+- `claimMessageFromSolanaWallet(deps, bridge, proof)` claims on a Rome chain from a Solana wallet.
+
 ## API
 
 | Export | What |
@@ -149,6 +183,7 @@ Quote-first: the bridge API owns route + calldata; the client signs the quote's 
 | `compileV1Message` | compile plain instructions into a v1 message: the inverse of `parseV1Message` |
 | `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
+| `sendMessageFromEvm` / `sendMessageFromSolanaWallet` / `messageLeavesOf` / `encodeClaimMessage` / `claimMessageFromEvm` / `claimMessageFromSolanaWallet` / `isMessageClaimed` | AggLayer messages, from `@rome-protocol/sdk/messages` (not re-exported here) |
 | `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
 | `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 wire helpers (the composed transaction is fetched and checked inside `submitRomeTxV1`, never handed back unchecked) |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |

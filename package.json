@@ -14,6 +14,10 @@
       "types": "./dist/bridge.d.ts",
       "import": "./dist/bridge.js"
     },
+    "./messages": {
+      "types": "./dist/messages.d.ts",
+      "import": "./dist/messages.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
