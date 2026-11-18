@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { Keypair, PublicKey, type Connection } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519";
 import { base58 } from "@scure/base";
-import { fromRlp, keccak256, type Hex } from "viem";
+import { fromRlp, getAddress, keccak256, type Hex } from "viem";
 import {
   ED25519_AUTH_MESSAGE_PREFIX,
   evmTxIdFor,
@@ -300,6 +300,40 @@ describe("submitRomeTxV1", () => {
     expect(res).toMatchObject({ route: "atomic", signature: "SOLSIG", from: syntheticAddress(kp.publicKey), receipt: { status: "0x1", transactionHash: res.hash, from: FROM } });
   });
 
+  it("treats a null evmTxHash like an absent one", async () => {
+    const signer = spySigner();
+    const { conn, asConnection } = fakeConnection();
+    const proxy = stubProxy({
+      rome_composeUnsignedAtomicV1: (params) => ({ ...composeAtomicFor(params), evmTxHash: null }),
+      eth_getTransactionReceipt: ownReceipt,
+    });
+    const res = await submitRomeTxV1(
+      { connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer },
+      { to: TOKEN, data: "0xdeadbeef", nonce: 4n, fee: FEE },
+    );
+    const [rlp] = proxy.of("rome_composeUnsignedAtomicV1")[0]!.params as string[];
+    expect(res.hash).toBe(`0x${hex(authHashFor(rlp as Hex))}`);
+    expect(res.route).toBe("atomic");
+    expect(conn.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches ids and the sender case-insensitively (upper-case hex, checksummed address)", async () => {
+    const upper = (h: string) => `0x${h.slice(2).toUpperCase()}`;
+    const signer = spySigner();
+    const { asConnection } = fakeConnection();
+    const proxy = stubProxy({
+      rome_composeUnsignedAtomicV1: (params) => ({ ...composeAtomicFor(params), evmTxHash: upper(relayAnswer(params)) }),
+      eth_getTransactionReceipt: (params) => ({ status: "0x1", blockNumber: "0x10", transactionHash: upper(params[0] as string), from: getAddress(FROM) }),
+    });
+    const res = await submitRomeTxV1(
+      { connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer },
+      { to: TOKEN, data: "0xdeadbeef", nonce: 4n, fee: FEE },
+    );
+    const [rlp] = proxy.of("rome_composeUnsignedAtomicV1")[0]!.params as string[];
+    expect(res.receipt).not.toBeNull();
+    expect(res.hash).toBe(upper(`0x${hex(authHashFor(rlp as Hex))}`));
+  });
+
   it("throws on a malformed compose answer BEFORE the second signature", async () => {
     const bad = buildV1Message({ accountKeys: [kp.publicKey, ROME_PROGRAM], rawMask: 0b100000, instructions: [] });
     const signer = spySigner();
@@ -504,6 +538,20 @@ describe("relayV1 with a passed signature", () => {
     );
     expect(proxy.of("rome_relayUnsignedV1")[0]!.params[2]).toBe(base58.encode(sig));
     expect(res.hash).toBe(relayAnswer(proxy.of("rome_relayUnsignedV1")[0]!.params));
+  });
+
+  it("accepts a relay answer and receipt in different case", async () => {
+    const upper = (h: string) => `0x${h.slice(2).toUpperCase()}`;
+    stubProxy({
+      rome_relayUnsignedV1: (params) => upper(relayAnswer(params)),
+      eth_getTransactionReceipt: (params) => ({ status: "0x1", blockNumber: "0x10", transactionHash: params[0] as Hex, from: getAddress(FROM) }),
+    });
+    const res = await relayV1(
+      { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp },
+      { to: TOKEN, nonce: 0n, fee: FEE },
+    );
+    expect(res.receipt).not.toBeNull();
+    expect(res.route).toBe("relay");
   });
 
   it("refuses a relay answer that is not the hash of the payload it was sent, and polls no receipt", async () => {

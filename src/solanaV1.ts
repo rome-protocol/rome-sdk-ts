@@ -246,8 +246,8 @@ interface ComposeV1Result {
   recentBlockhash: string;
   /** Base64 v1 wire with a zero signature slot. */
   transaction: string;
-  /** The id the proxy reports for this call: the authorization hash or the sender-bound id. Absent on older proxies. */
-  evmTxHash?: Hex;
+  /** The id the proxy reports for this call: the authorization hash or the sender-bound id. Absent (or null) on older proxies. */
+  evmTxHash?: Hex | null;
 }
 
 /**
@@ -349,7 +349,7 @@ async function prepare(deps: SolanaLaneV1Deps, call: V1Call) {
     data: call.data,
   });
   const hash = hexOf(authHashFor(rlp));
-  return { fetchImpl, signer, from, rlp, hash, ids: [hash, evmTxIdFor(hash, signer.payer)] as const };
+  return { fetchImpl, signer, from, rlp, ids: [hash, evmTxIdFor(hash, signer.payer)] as const };
 }
 
 const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -406,7 +406,7 @@ export async function submitRomeTxV1(
   }
 
   // Checked before the wallet signs: an id that is neither of ours means the answer is for another call.
-  if (composed.evmTxHash !== undefined && !isOneOf(composed.evmTxHash, ids)) {
+  if (composed.evmTxHash != null && !isOneOf(composed.evmTxHash, ids)) {
     throw new Error(`rome_composeUnsignedAtomicV1: proxy answered evmTxHash ${composed.evmTxHash}, expected ${ids[0]} or ${ids[1]}`);
   }
   const polled = (composed.evmTxHash ?? ids[0]) as Hex;

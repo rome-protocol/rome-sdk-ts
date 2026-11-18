@@ -188,7 +188,7 @@ if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount,
 | `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
 | `sendMessageFromEvm` / `sendMessageFromSolanaWallet` / `messageLeavesOf` / `encodeClaimMessage` / `claimMessageFromEvm` / `claimMessageFromSolanaWallet` / `isMessageClaimed` | AggLayer messages, from `@rome-protocol/sdk/messages` (not re-exported here) |
-| `toLaneSigner` / `authHashFor` / `evmTxIdFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper, the authorization hash, the sender-bound transaction id, and the readable authorization message |
+| `toLaneSigner` / `authHashFor` / `evmTxIdFor` / `TX_ID_TAG` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper, the authorization hash, the sender-bound transaction id and its domain tag (`"RomeSolanaV1TxId"`), and the readable authorization message |
 | `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 wire helpers (the composed transaction is fetched and checked inside `submitRomeTxV1`, never handed back unchecked) |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
