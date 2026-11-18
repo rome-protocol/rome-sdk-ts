@@ -5,6 +5,7 @@ import { base58 } from "@scure/base";
 import { fromRlp, keccak256, type Hex } from "viem";
 import {
   ED25519_AUTH_MESSAGE_PREFIX,
+  evmTxIdFor,
   ATOMIC_REFUSAL_TEXT,
   authHashFor,
   ed25519AuthMessage,
@@ -104,7 +105,9 @@ function spySigner(): LaneSigner & { auth: ReturnType<typeof vi.fn>; wire: Retur
 // What an honest relay answers: the hash of the payload it was sent.
 const relayAnswer = (params: unknown[]) => `0x${hex(authHashFor(params[0] as Hex))}`;
 
-const receipt = { status: "0x1", blockNumber: "0x10", transactionHash: "0xabc" };
+const FROM = syntheticAddress(kp.publicKey);
+// What the proxy answers for the wallet's own transaction: the receipt of whichever id was asked for.
+const ownReceipt = (params: unknown[]) => ({ status: "0x1", blockNumber: "0x10", transactionHash: params[0] as Hex, from: FROM });
 
 describe("authorization message", () => {
   it("prefix is the exact 21 bytes", () => {
@@ -122,6 +125,34 @@ describe("authorization message", () => {
   it("authHashFor is keccak256(0x02 || rlp)", () => {
     const rlp = "0xe483030d4a81868080830f424094d868eec27e47376e739d0a3555f81b7657faa3228080c0" as Hex;
     expect(`0x${hex(authHashFor(rlp))}`).toBe(keccak256(`0x02${rlp.slice(2)}` as Hex));
+  });
+});
+
+describe("evmTxIdFor", () => {
+  const SIGNING = `0x${"11".repeat(32)}` as Hex;
+  const PUBKEY = `0x${"22".repeat(32)}` as Hex;
+  // Computed independently: keccak256 of "RomeSolanaV1TxId" || 32 x 0x11 || 32 x 0x22 (pycryptodome and cast keccak agree).
+  const VECTOR = "0x058941a9f39cf113eb00c09c504e88080690a27d80243508e5c9227a257db3a7";
+
+  it("matches the shared test vector", () => {
+    expect(evmTxIdFor(SIGNING, PUBKEY)).toBe(VECTOR);
+  });
+  it("is keccak256(tag || signingHash || pubkey) over 80 bytes", () => {
+    const tag = Buffer.from("RomeSolanaV1TxId");
+    expect(tag.length).toBe(16);
+    expect(evmTxIdFor(SIGNING, PUBKEY)).toBe(keccak256(`0x${tag.toString("hex")}${"11".repeat(32)}${"22".repeat(32)}`));
+  });
+  it("takes bytes and a PublicKey as well as hex", () => {
+    expect(evmTxIdFor(new Uint8Array(32).fill(0x11), new Uint8Array(32).fill(0x22))).toBe(VECTOR);
+    expect(evmTxIdFor(SIGNING, new PublicKey(new Uint8Array(32).fill(0x22)))).toBe(VECTOR);
+  });
+  it("differs per wallet and per payload", () => {
+    expect(evmTxIdFor(SIGNING, `0x${"23".repeat(32)}`)).not.toBe(VECTOR);
+    expect(evmTxIdFor(`0x${"12".repeat(32)}`, PUBKEY)).not.toBe(VECTOR);
+  });
+  it("rejects inputs that are not 32 bytes", () => {
+    expect(() => evmTxIdFor("0x1234", PUBKEY)).toThrow(/signingHash must be 32 bytes/);
+    expect(() => evmTxIdFor(SIGNING, "0x1234")).toThrow(/pubkey must be 32 bytes/);
   });
 });
 
@@ -227,7 +258,7 @@ describe("isAtomicRefusal", () => {
 
 describe("submitRomeTxV1", () => {
   const call = { to: TOKEN, data: "0xdeadbeef" as Hex, nonce: 4n, fee: FEE };
-  const receiptHandler = () => receipt;
+  const receiptHandler = ownReceipt;
 
   it("signs twice with one key, broadcasts message || sig, returns the receipt", async () => {
     const signer = spySigner();
@@ -266,14 +297,14 @@ describe("submitRomeTxV1", () => {
     expect(opts).toEqual({ skipPreflight: true });
 
     expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([res.hash]);
-    expect(res).toMatchObject({ route: "atomic", signature: "SOLSIG", from: syntheticAddress(kp.publicKey), receipt });
+    expect(res).toMatchObject({ route: "atomic", signature: "SOLSIG", from: syntheticAddress(kp.publicKey), receipt: { status: "0x1", transactionHash: res.hash, from: FROM } });
   });
 
   it("throws on a malformed compose answer BEFORE the second signature", async () => {
     const bad = buildV1Message({ accountKeys: [kp.publicKey, ROME_PROGRAM], rawMask: 0b100000, instructions: [] });
     const signer = spySigner();
     const { conn, asConnection } = fakeConnection();
-    stubProxy({ rome_composeUnsignedAtomicV1: () => ({ recentBlockhash: "x", transaction: wireOf(bad).toString("base64") }), eth_getTransactionReceipt: () => receipt });
+    stubProxy({ rome_composeUnsignedAtomicV1: () => ({ recentBlockhash: "x", transaction: wireOf(bad).toString("base64") }), eth_getTransactionReceipt: ownReceipt });
     await expect(
       submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, call),
     ).rejects.toThrow(/unknown config mask/);
@@ -341,7 +372,7 @@ describe("submitRomeTxV1", () => {
     conn.getSignatureStatuses
       .mockRejectedValueOnce(new Error("429 too many requests"))
       .mockResolvedValueOnce({ value: [null] } as never);
-    stubProxy({ rome_composeUnsignedAtomicV1: composeAtomicFor, eth_getTransactionReceipt: () => receipt });
+    stubProxy({ rome_composeUnsignedAtomicV1: composeAtomicFor, eth_getTransactionReceipt: ownReceipt });
     const res = await submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp }, call);
     expect(res.signature).toBe("SOLSIG");
     expect(conn.getSignatureStatuses.mock.calls.length).toBeGreaterThanOrEqual(3);
@@ -389,7 +420,7 @@ describe("submitRomeTxV1", () => {
       expect(conn.sendRawTransaction).not.toHaveBeenCalled();
       const composeParams = proxy.of("rome_composeUnsignedAtomicV1")[0]!.params;
       expect(proxy.of("rome_relayUnsignedV1")[0]!.params).toEqual(composeParams);
-      expect(res).toMatchObject({ route: "relay", receipt });
+      expect(res).toMatchObject({ route: "relay", receipt: { status: "0x1", transactionHash: res.hash, from: FROM } });
       expect(res.hash).toBe(relayAnswer(composeParams));
       expect(res.signature).toBeUndefined();
     });
@@ -465,7 +496,7 @@ describe("relayV1 with a passed signature", () => {
     expect(proxy.calls).toHaveLength(0);
   });
   it("accepts an authSig when nonce and fee are pinned", async () => {
-    const proxy = stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: () => receipt });
+    const proxy = stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: ownReceipt });
     const sig = new Uint8Array(64).fill(3);
     const res = await relayV1(
       { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp },
@@ -476,13 +507,13 @@ describe("relayV1 with a passed signature", () => {
   });
 
   it("refuses a relay answer that is not the hash of the payload it was sent, and polls no receipt", async () => {
-    const proxy = stubProxy({ rome_relayUnsignedV1: () => `0x${"ab".repeat(32)}`, eth_getTransactionReceipt: () => receipt });
+    const proxy = stubProxy({ rome_relayUnsignedV1: () => `0x${"ab".repeat(32)}`, eth_getTransactionReceipt: ownReceipt });
     await expect(
       relayV1(
         { connection: fakeConnection().asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer: kp },
         { to: TOKEN, nonce: 0n, fee: FEE },
       ),
-    ).rejects.toThrow(/relay answered 0xabab.*expected 0x[0-9a-f]{64}/);
+    ).rejects.toThrow(/relay answered 0xabab.*expected 0x[0-9a-f]{64} or 0x[0-9a-f]{64}/);
     expect(proxy.of("eth_getTransactionReceipt")).toHaveLength(0);
   });
 });
@@ -537,7 +568,7 @@ describe("composed transaction check", () => {
         recentBlockhash: "x",
         transaction: b64(build(params[0] as Hex, base58.decode(params[2] as string))),
       }),
-      eth_getTransactionReceipt: () => receipt,
+      eth_getTransactionReceipt: ownReceipt,
     });
     const run = () => submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, call);
     return { run, signer, conn };
@@ -577,7 +608,7 @@ describe("composed transaction check", () => {
     const { conn, asConnection } = fakeConnection();
     stubProxy({
       rome_composeUnsignedAtomicV1: () => ({ recentBlockhash: fixture.recentBlockhash, transaction: fixture.transaction }),
-      eth_getTransactionReceipt: () => receipt,
+      eth_getTransactionReceipt: (p) => ({ ...ownReceipt(p), from: syntheticAddress(payer) }),
     });
     const res = await submitRomeTxV1(
       { connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: Number(BigInt(fields[0]!)), signer },
@@ -768,5 +799,144 @@ describe("public surface", () => {
   it("does not export a way to fetch a composed transaction without the check", async () => {
     const root = await import("../src/index.js");
     expect(root).not.toHaveProperty("composeAtomicV1");
+  });
+});
+
+describe("transaction ids and receipt acceptance", () => {
+  const call = { to: TOKEN, data: "0xdeadbeef" as Hex, nonce: 4n, fee: FEE };
+  const deps = (signer: LaneSigner | typeof kp = kp, extra: object = {}) => ({
+    connection: fakeConnection().asConnection,
+    proxyUrl: PROXY,
+    programId: ROME_PROGRAM,
+    chainId: CHAIN_ID,
+    signer,
+    receiptTimeoutMs: 20,
+    ...extra,
+  });
+  const idsOf = (params: unknown[]) => {
+    const oldId = relayAnswer(params) as Hex;
+    return { oldId, newId: evmTxIdFor(oldId, kp.publicKey) };
+  };
+  const otherFrom = syntheticAddress(Keypair.fromSeed(Uint8Array.from({ length: 32 }, (_, i) => i + 90)).publicKey);
+
+  describe("relay", () => {
+    it("accepts the old id, polls it, and returns the receipt's hash", async () => {
+      const proxy = stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: ownReceipt });
+      const res = await relayV1(deps(), call);
+      const { oldId } = idsOf(proxy.of("rome_relayUnsignedV1")[0]!.params);
+      expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([oldId]);
+      expect(res.hash).toBe(oldId);
+    });
+
+    it("accepts the new id, polls it, and returns the receipt's hash", async () => {
+      const proxy = stubProxy({
+        rome_relayUnsignedV1: (p) => idsOf(p).newId,
+        eth_getTransactionReceipt: ownReceipt,
+      });
+      const res = await relayV1(deps(), call);
+      const { newId } = idsOf(proxy.of("rome_relayUnsignedV1")[0]!.params);
+      expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([newId]);
+      expect(res.hash).toBe(newId);
+      expect(res.receipt?.transactionHash).toBe(newId);
+    });
+
+    it("refuses the id of another wallet's call", async () => {
+      const proxy = stubProxy({
+        rome_relayUnsignedV1: (p) => evmTxIdFor(relayAnswer(p) as Hex, new Uint8Array(32).fill(9)),
+        eth_getTransactionReceipt: ownReceipt,
+      });
+      await expect(relayV1(deps(), call)).rejects.toThrow(/relay answered/);
+      expect(proxy.of("eth_getTransactionReceipt")).toHaveLength(0);
+    });
+
+    it("does not take another wallet's receipt for the same payload", async () => {
+      const proxy = stubProxy({
+        rome_relayUnsignedV1: relayAnswer,
+        eth_getTransactionReceipt: (p) => ({ status: "0x1", transactionHash: p[0], from: otherFrom }),
+      });
+      const res = await relayV1(deps(), call);
+      expect(res.receipt).toBeNull();
+      expect(res.hash).toBe(idsOf(proxy.of("rome_relayUnsignedV1")[0]!.params).oldId); // no receipt: the polled id
+    });
+
+    it("does not take a receipt without a sender, or with an id that is neither of ours", async () => {
+      stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: (p) => ({ status: "0x1", transactionHash: p[0] }) });
+      expect((await relayV1(deps(), call)).receipt).toBeNull();
+      stubProxy({ rome_relayUnsignedV1: relayAnswer, eth_getTransactionReceipt: () => ({ status: "0x1", transactionHash: `0x${"ab".repeat(32)}`, from: FROM }) });
+      expect((await relayV1(deps(), call)).receipt).toBeNull();
+    });
+
+    it("keeps polling past another wallet's receipt until its own lands", async () => {
+      let n = 0;
+      stubProxy({
+        rome_relayUnsignedV1: relayAnswer,
+        eth_getTransactionReceipt: (p) => (n++ === 0 ? { status: "0x1", transactionHash: p[0], from: otherFrom } : ownReceipt(p)),
+      });
+      const res = await relayV1(deps(undefined, { receiptTimeoutMs: 5000 }), call);
+      expect(res.receipt?.from).toBe(FROM);
+    });
+
+    it("returns the receipt's own hash, even when it differs from the polled id", async () => {
+      const proxy = stubProxy({
+        rome_relayUnsignedV1: relayAnswer,
+        eth_getTransactionReceipt: (p) => ({ status: "0x1", from: FROM, transactionHash: evmTxIdFor(p[0] as Hex, kp.publicKey) }),
+      });
+      const res = await relayV1(deps(), call);
+      const { newId } = idsOf(proxy.of("rome_relayUnsignedV1")[0]!.params);
+      // the polled id is the signing hash; the receipt carries the new id
+      expect(res.hash).toBe(newId);
+    });
+  });
+
+  describe("atomic", () => {
+    const run = async (evmTxHash: ((p: unknown[]) => Hex | undefined) | null) => {
+      const proxy = stubProxy({
+        rome_composeUnsignedAtomicV1: (p) => ({ ...composeAtomicFor(p), ...(evmTxHash && evmTxHash(p) ? { evmTxHash: evmTxHash(p) } : {}) }),
+        eth_getTransactionReceipt: ownReceipt,
+      });
+      const res = await submitRomeTxV1(deps(), call);
+      return { proxy, res, ids: idsOf(proxy.of("rome_composeUnsignedAtomicV1")[0]!.params) };
+    };
+
+    it("polls the old id when the proxy sends no evmTxHash", async () => {
+      const { proxy, res, ids } = await run(null);
+      expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([ids.oldId]);
+      expect(res.hash).toBe(ids.oldId);
+    });
+
+    it("polls evmTxHash when it is the old id", async () => {
+      const { proxy, res, ids } = await run((p) => idsOf(p).oldId);
+      expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([ids.oldId]);
+      expect(res.hash).toBe(ids.oldId);
+    });
+
+    it("polls evmTxHash when it is the new id", async () => {
+      const { proxy, res, ids } = await run((p) => idsOf(p).newId);
+      expect(proxy.of("eth_getTransactionReceipt")[0]!.params).toEqual([ids.newId]);
+      expect(res.hash).toBe(ids.newId);
+      expect(res.receipt?.transactionHash).toBe(ids.newId);
+    });
+
+    it("refuses an evmTxHash that is neither id, before the wallet signs the transaction", async () => {
+      const signer = spySigner();
+      const { conn, asConnection } = fakeConnection();
+      stubProxy({
+        rome_composeUnsignedAtomicV1: (p) => ({ ...composeAtomicFor(p), evmTxHash: `0x${"cd".repeat(32)}` }),
+        eth_getTransactionReceipt: ownReceipt,
+      });
+      await expect(submitRomeTxV1({ ...deps(signer), connection: asConnection }, call)).rejects.toThrow(/evmTxHash 0xcdcd/);
+      expect(signer.wire).not.toHaveBeenCalled();
+      expect(conn.sendRawTransaction).not.toHaveBeenCalled();
+    });
+
+    it("does not take another wallet's receipt for the same payload", async () => {
+      stubProxy({
+        rome_composeUnsignedAtomicV1: composeAtomicFor,
+        eth_getTransactionReceipt: (p) => ({ status: "0x1", transactionHash: p[0], from: otherFrom }),
+      });
+      const res = await submitRomeTxV1(deps(), call);
+      expect(res.receipt).toBeNull();
+      expect(res.signature).toBe("SOLSIG");
+    });
   });
 });

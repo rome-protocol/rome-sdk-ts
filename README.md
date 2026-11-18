@@ -71,7 +71,9 @@ The wallet **signs the Solana transaction and sends it to the Solana RPC** (the 
 
 ### The v1 Solana lane
 
-`submitRomeTxV1` is the newer Solana lane. The proxy composes **one Solana v1 transaction** (up to 4096 bytes and 64 accounts, no lookup table) for your EVM call, and the wallet signs it. There is no ComputeBudget, treasure wallet or account list to assemble on the client. The same key signs **twice**: first a readable authorization message that the wallet shows as `Rome authorization\n0x<hash>` (the `<hash>` is the EVM transaction hash), then the Solana transaction itself. The app sends the signed transaction to the Solana RPC.
+`submitRomeTxV1` is the newer Solana lane. The proxy composes **one Solana v1 transaction** (up to 4096 bytes and 64 accounts, no lookup table) for your EVM call, and the wallet signs it. There is no ComputeBudget, treasure wallet or account list to assemble on the client. The same key signs **twice**: first a readable authorization message that the wallet shows as `Rome authorization\n0x<hash>` (the `<hash>` is the authorization hash of the payload), then the Solana transaction itself. The app sends the signed transaction to the Solana RPC.
+
+**Transaction ids.** Two wallets can send the same payload, so a chain can report each call under an id bound to its sender: `evmTxIdFor(signingHash, pubkey)` = `keccak256("RomeSolanaV1TxId" ‖ signingHash ‖ ed25519Pubkey)`, where `signingHash` is `authHashFor(rlp)`. The SDK accepts either the authorization hash or the sender-bound id from the proxy, and takes a receipt only when it is from this wallet's synthetic sender and carries one of those two ids. `result.hash` is the receipt's own hash (the polled id when no receipt appeared in time).
 
 ```ts
 import { submitRomeTxV1 } from "@rome-protocol/sdk";
@@ -186,7 +188,7 @@ if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount,
 | `submitRomeTxV1(deps, call)` | the v1 Solana lane: one composed v1 transaction, two signatures from one key, relay on refusal |
 | `relayV1` / `fundSyntheticGas` / `waitForReceipt` | relay a call through the proxy / top up native gas from the wallet's gas-token account / poll the EVM receipt |
 | `sendMessageFromEvm` / `sendMessageFromSolanaWallet` / `messageLeavesOf` / `encodeClaimMessage` / `claimMessageFromEvm` / `claimMessageFromSolanaWallet` / `isMessageClaimed` | AggLayer messages, from `@rome-protocol/sdk/messages` (not re-exported here) |
-| `toLaneSigner` / `authHashFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper and the readable authorization message |
+| `toLaneSigner` / `authHashFor` / `evmTxIdFor` / `ed25519AuthMessage` / `ED25519_AUTH_MESSAGE_PREFIX` | signer wrapper, the authorization hash, the sender-bound transaction id, and the readable authorization message |
 | `isAtomicRefusal` / `splitV1Wire` / `packSignedV1Wire` / `parseV1Message` | v1 wire helpers (the composed transaction is fetched and checked inside `submitRomeTxV1`, never handed back unchecked) |
 | `provisionSynthetic` / `isSyntheticProvisioned` / `buildCreatePdaCall` | fresh-synthetic provisioning (`create_pda`) — auto on first `submitRomeTxSolanaLane` |
 | `syntheticAddress` / `emulateCallAccounts` / `buildDoTxUnsigned` / `buildActivateAtaInstruction` / `treasureWallet` / `balanceKeyPda` / `computeBudgetIxs` / `SyntheticNonceTracker` | Solana-lane primitives |
