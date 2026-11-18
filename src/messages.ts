@@ -47,8 +47,14 @@ export interface BridgeMessage {
   forceUpdateGlobalExitRoot?: boolean;
 }
 
-/** The calldata of `bridgeMessage`. */
+/** A message to address 0 reaches nothing and nobody can claim it, so no send is built for it, in any case of the digits. */
+function assertDestination(m: BridgeMessage): void {
+  if (/^0x0{40}$/i.test(m.destinationAddress)) throw new Error("destinationAddress is the zero address: a message sent there is lost, so no calldata is built");
+}
+
+/** The calldata of `bridgeMessage`. Refuses a zero destination address. */
 export function encodeBridgeMessage(m: BridgeMessage): Hex {
+  assertDestination(m);
   return encodeFunctionData({
     abi: bridgeMessageAbi,
     functionName: "bridgeMessage",
@@ -56,8 +62,9 @@ export function encodeBridgeMessage(m: BridgeMessage): Hex {
   });
 }
 
-/** The calldata of `bridgeMessageWETH`: the message carries `amountWETH` of the bridge's WETH, burned on the send. */
+/** The calldata of `bridgeMessageWETH`: the message carries `amountWETH` of the bridge's WETH, burned on the send. Refuses a zero destination address. */
 export function encodeBridgeMessageWETH(m: BridgeMessage & { amountWETH: bigint }): Hex {
+  assertDestination(m);
   return encodeFunctionData({
     abi: bridgeMessageAbi,
     functionName: "bridgeMessageWETH",
