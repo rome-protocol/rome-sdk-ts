@@ -240,7 +240,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /** A client for one network's Solgate messages API. */
 export function createMessagesClient(opts: SolgateMessagesOptions): SolgateMessagesClient {
-  const base = opts.base.replace(/\/+$/, "");
+  let base = opts.base;
+  while (base.endsWith("/")) base = base.slice(0, -1);
 
   async function call<T>(path: string, init?: { method: "POST"; body: unknown }): Promise<T> {
     const f = opts.fetch ?? globalThis.fetch;
