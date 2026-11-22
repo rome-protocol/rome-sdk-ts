@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add the Solgate messages API client to `@rome-protocol/sdk/messages`: `createMessagesClient({ base })` with `record`, `list` (by `wallet`, `sender`, `receiver`, or a `since` feed), `get`, `proof`, `claimStep`, `claimSteps` (up to 10 together), `sendStep` and `waitReady`, typed answers, and `SolgateApiError` with the API's codes (`SOLGATE_ERROR_CODES`). It signs and sends nothing.
+- Add the Solgate messages API client to `@rome-protocol/sdk/messages`: `createMessagesClient({ base })` with `record`, `list` (by `wallet`, `sender`, `receiver`, or a `since` feed), `get`, `proof`, `claimStep`, `claimSteps` (up to 10 together), `sendStep` and `waitReady` (it retries a rate limit, an unavailable upstream and network errors), typed answers, and `SolgateApiError` with the API's codes (`SOLGATE_ERROR_CODES`). It signs and sends nothing.
 - README: the install line names v0.5.0, the tag that has the on-chain messages half; the API client section says it comes with the next tag.
 
 ## 0.5.0
