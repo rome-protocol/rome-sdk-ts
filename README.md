@@ -185,15 +185,15 @@ const api = createMessagesClient({ base: solgateApiUrl }); // one network's Solg
 const { messages } = await api.record({ networkId: sourceNetworkId, txHash: hash });
 
 // Wait until anyone may claim it, then get the checked claim step (with its cost) or the raw proof.
-const message = await api.waitReady(messages[0].id);
+const message = await api.waitReady(messages[0]!.id);
 const { steps, cost } = await api.claimStep(message.id); // steps[0] is { kind: "evm-tx", to, data, value } for the destination chain
 const { proof } = await api.proof(message.id);            // claimMessage's arguments: claimMessageFromEvm(walletClient, bridge, proof)
 ```
 
-- `list({ sender | receiver | wallet | since, ... })` lists messages (newest first) or, with `since`, follows them (oldest first, for a poller). `sender` is the address that called `bridgeMessage` and finds a message in both directions; `wallet` finds the rows a wallet acts on or that are addressed to it, so it does not find a message sent *into* Rome by its sender.
-- `claimSteps(ids)` claims up to 10 messages to one network together (one Multicall3 transaction where the destination has it). `sendStep({ from, to, receiver, data, wallet })` builds the steps of a send, one-time grants first; record the sent transaction afterwards.
+- `list({ sender | receiver | wallet | since, ... })` lists messages (newest first) or, with `since`, follows them (oldest first, for a poller; `since` is not given with `cursor` or `wallet`). `sender` is the address that called `bridgeMessage` and finds a message in both directions; `wallet` finds the rows a wallet acts on or that are addressed to it, so it does not find a message sent *into* Rome by its sender.
+- `claimSteps(ids)` builds the claim steps for up to 10 messages to one network together (one Multicall3 transaction where the destination has it). `sendStep({ from, to, receiver, data, wallet })` builds the steps of a send, one-time grants first; record the sent transaction afterwards.
 - A refusal is a `SolgateApiError` with `status`, `code` (`not_claimable`, `claim_token_first`, `message_would_fail`, `proof_not_ready`, ... listed in `SOLGATE_ERROR_CODES`), the API's words as `message`, and any other fields as `extra`. With the messages switch off on a network, every route answers 404.
-- The routes are described by an OpenAPI file that the Solgate app serves at `/openapi/messages.yaml` (on the app's own host, for example `https://solgate.testnet.romeprotocol.xyz/openapi/messages.yaml`).
+- The routes are described by an OpenAPI file that a Solgate host serves at `/v1/messages/openapi.yaml` where messages are on (it answers 404 where they are off).
 
 ## API
 

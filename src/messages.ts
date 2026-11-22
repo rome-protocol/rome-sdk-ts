@@ -2,8 +2,8 @@
 // leaf from the receipt, and claim it on the destination) and the API half (`createMessagesClient`, in `./messagesApi.ts`,
 // re-exported below). Separate entry point: `@rome-protocol/sdk/messages`.
 //
-// The on-chain functions call no API: the claim proof is an input (`MessageProof`), the shape Solgate's `/v1/messages/:id/proof`
-// serves for a message. Sends and claims on a Rome chain go through the SDK's write paths (`submitRomeTx` for an EVM wallet that
+// The on-chain functions call no API: the claim proof is an input (`MessageProof`), the shape of the `proof` field in the
+// answer of Solgate's `/v1/messages/:id/proof`. Sends and claims on a Rome chain go through the SDK's write paths (`submitRomeTx` for an EVM wallet that
 // asks for it, `submitRomeTxV1` for a Solana wallet).
 import { decodeEventLog, encodeFunctionData, parseAbi, type Hex, type PublicClient, type WalletClient } from "viem";
 import { submitRomeTx } from "./write.js";

@@ -14,7 +14,7 @@ const BASE = "https://solgate.example";
 const TX = `0x${"ab".repeat(32)}` as Hex;
 const RECEIVER = "0x0000000000000000000000000000000000000011" as Hex;
 const ID = "11111111-1111-4111-8111-111111111111";
-const WALLET = "9wJGNGxyzxyzxyzxyzxyzxyzxyzxyzxyzxyzxyziAds";
+const WALLET = "11111111111111111111111111111111";
 
 const message = (over: Partial<SolgateMessage> = {}): SolgateMessage => ({
   id: ID, status: "ready_to_claim", needsAttention: false,
@@ -137,6 +137,8 @@ describe("errors", () => {
     // the switch off: the server's own 404 body
     expect(await client(() => reply(404, { message: "Route GET:/v1/messages not found", error: "Not Found", statusCode: 404 })).api.list({ wallet: WALLET }).then(() => null, (x: unknown) => x)).toMatchObject({ status: 404, code: "Not Found" });
     const broken = { ok: false, status: 502, json: async () => { throw new Error("not json"); } } as unknown as Response;
+    const notJson = { ok: true, status: 200, json: async () => { throw new Error("not json"); } } as unknown as Response;
+    expect(await client(() => notJson).api.get(ID).then(() => null, (x: unknown) => x)).toMatchObject({ status: 200, code: "error", message: "The answer was not JSON." });
     expect(await client(() => broken).api.get(ID).then(() => null, (x: unknown) => x)).toMatchObject({ status: 502, code: "error", message: "HTTP 502" });
   });
 });
@@ -168,9 +170,28 @@ describe("waitReady", () => {
     await expect(waiting).rejects.toThrow("stop");
   });
 
+  it("retries a rate limit, an unavailable upstream and a network error, then answers", async () => {
+    const seq = [
+      () => reply(429, { error: "rate_limited", message: "Try again in a minute." }),
+      () => reply(503, { error: "upstream_unavailable", message: "Try again shortly." }),
+      () => { throw new TypeError("fetch failed"); },
+      () => reply(200, message({ status: "ready_to_claim" })),
+    ];
+    let i = 0;
+    const { api, fetch } = client(() => seq[i++]!());
+    expect((await api.waitReady(ID, { intervalMs: 1 })).status).toBe("ready_to_claim");
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("throws the last retryable error when the deadline passes", async () => {
+    const { api } = client(() => reply(429, { error: "rate_limited", message: "Try again in a minute." }));
+    await expect(api.waitReady(ID, { intervalMs: 5, timeoutMs: 20 })).rejects.toMatchObject({ status: 429, code: "rate_limited" });
+  });
+
   it("a refusal while polling is thrown, not retried", async () => {
-    const { api } = client(() => reply(404, { error: "not_found", message: "No message has that id." }));
+    const { api, fetch } = client(() => reply(404, { error: "not_found", message: "No message has that id." }));
     await expect(api.waitReady(ID, { intervalMs: 1 })).rejects.toMatchObject({ status: 404, code: "not_found" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 

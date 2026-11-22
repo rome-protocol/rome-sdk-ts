@@ -1,7 +1,8 @@
 // AggLayer messages — the API half: a client for Solgate's `/v1/messages` routes (record a sent message, list or follow messages,
 // read a message's proof, get the step that claims it, claim several together, build a send). Re-exported by `@rome-protocol/sdk/messages`.
 //
-// The wire types follow Solgate's OpenAPI file for these routes (served by the Solgate app at `/openapi/messages.yaml`).
+// The wire types follow Solgate's OpenAPI file for these routes (served by the Solgate app at `/v1/messages/openapi.yaml` where
+// messages are on; it answers 404 where they are off).
 // Nothing here signs or sends: the API hands out steps (transactions to sign) and the caller's wallet sends them, with the
 // helpers of the on-chain half (`sendMessageFromEvm`, `claimMessageFromEvm`, the Solana-wallet variants).
 //
@@ -154,7 +155,7 @@ export interface RecordMessagesRequest {
  * `wallet`: the rows the wallet acts on (a send out of Rome is the wallet that sent it; a message into Rome belongs to its receiver) and the rows addressed to it. It does NOT find a message sent into Rome by its sender: use `sender` for that.
  * `sender`: the origin address, the caller of `bridgeMessage` on the source network, in both directions; `receiver` may narrow it. `receiver`: the contract the message goes to.
  * An address is a 0x address or a Solana public key (its Rome address is what the rows hold). `wallet` is not given together with `sender` or `receiver`.
- * `since` (a feed, oldest first, for a poller): the `next` of an earlier feed answer, or an ISO time (URL-encoding is done here); `cursor` is not used with it.
+ * `since` (a feed, oldest first, for a poller): the `next` of an earlier feed answer, or an ISO time (URL-encoding is done here); `cursor` and `wallet` are not used with it (the server refuses them).
  */
 export interface ListMessagesQuery {
   wallet?: string;
@@ -223,7 +224,11 @@ export interface SolgateMessagesClient {
   claimSteps(ids: readonly string[], opts?: { solanaWallet?: string }): Promise<ClaimStepsAnswer>;
   /** The steps that send a message (an `evm-tx` to the source bridge, or a `rome-call-from-solana`), with any one-time grant first. Record the sent transaction afterwards with `record`. */
   sendStep(req: SendStepRequest): Promise<SendStepAnswer>;
-  /** Poll `get` until the message is `ready_to_claim` and answer it; one already `claimed`, `in_rome_account` or `received` is answered at once. Throws when `timeoutMs` passes or `signal` aborts. */
+  /**
+   * Poll `get` until the message is `ready_to_claim` and answer it; one already `claimed`, `in_rome_account` or `received` is answered at once.
+   * A `rate_limited` (429) or `upstream_unavailable` (503) answer, or a network error, is retried with a growing wait (up to 60 s) until the deadline;
+   * then the last such error is thrown. Any other refusal is thrown at once. Throws when `timeoutMs` passes or `signal` aborts.
+   */
   waitReady(id: string, opts?: WaitReadyOptions): Promise<SolgateMessage>;
 }
 
@@ -238,6 +243,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** A busy or briefly unavailable API, or a network error: worth another try. A definitive refusal is not. */
+function isRetryable(e: unknown): boolean {
+  if (e instanceof SolgateApiError) return e.status === 429 || e.status === 503;
+  return e instanceof TypeError;
+}
+
 /** A client for one network's Solgate messages API. */
 export function createMessagesClient(opts: SolgateMessagesOptions): SolgateMessagesClient {
   let base = opts.base;
@@ -246,7 +257,9 @@ export function createMessagesClient(opts: SolgateMessagesOptions): SolgateMessa
   async function call<T>(path: string, init?: { method: "POST"; body: unknown }): Promise<T> {
     const f = opts.fetch ?? globalThis.fetch;
     const res = await f(`${base}${path}`, init ? { method: init.method, headers: { "content-type": "application/json" }, body: JSON.stringify(init.body) } : undefined);
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const parsed = await res.json().then((b: unknown) => ({ ok: true as const, b }), () => ({ ok: false as const, b: undefined }));
+    const body = (parsed.ok && typeof parsed.b === "object" && parsed.b !== null ? parsed.b : {}) as Record<string, unknown>;
+    if (res.ok && !parsed.ok) throw new SolgateApiError(res.status, "error", "The answer was not JSON.", {});
     if (!res.ok) {
       const { error, message, ...extra } = body;
       throw new SolgateApiError(res.status, typeof error === "string" ? error : "error", typeof message === "string" ? message : `HTTP ${res.status}`, extra);
@@ -272,11 +285,21 @@ export function createMessagesClient(opts: SolgateMessagesOptions): SolgateMessa
     async waitReady(id, o = {}) {
       const interval = o.intervalMs ?? 5_000;
       const deadline = Date.now() + (o.timeoutMs ?? 30 * 60_000);
+      let failures = 0;
       for (;;) {
-        const m = await client.get(id);
-        if (DONE.includes(m.status)) return m;
-        if (Date.now() + interval > deadline) throw new Error(`message ${id} was not ready to claim in time (status ${m.status})`);
-        await sleep(interval, o.signal);
+        let wait = interval;
+        try {
+          const m = await client.get(id);
+          failures = 0;
+          if (DONE.includes(m.status)) return m;
+          if (Date.now() + interval > deadline) throw new Error(`message ${id} was not ready to claim in time (status ${m.status})`);
+        } catch (e) {
+          if (!isRetryable(e)) throw e;
+          failures += 1;
+          wait = Math.min(interval * 2 ** failures, Math.max(interval, 60_000));
+          if (Date.now() + wait > deadline) throw e;
+        }
+        await sleep(wait, o.signal);
       }
     },
   };
