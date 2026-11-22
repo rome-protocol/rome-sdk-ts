@@ -1,13 +1,16 @@
-// AggLayer messages — the on-chain half: encode a bridge message, send it from an EVM wallet or a Solana wallet, read its
-// leaf from the receipt, and claim it on the destination. Separate entry point: `@rome-protocol/sdk/messages`.
+// AggLayer messages: the on-chain half (encode a bridge message, send it from an EVM wallet or a Solana wallet, read its
+// leaf from the receipt, and claim it on the destination) and the API half (`createMessagesClient`, in `./messagesApi.ts`,
+// re-exported below). Separate entry point: `@rome-protocol/sdk/messages`.
 //
-// Nothing here calls an API: the claim proof is an input (`MessageProof`), which is the shape a bridge service serves for a
-// message. Sends and claims on a Rome chain go through the SDK's write paths (`submitRomeTx` for an EVM wallet that asks for it,
-// `submitRomeTxV1` for a Solana wallet).
+// The on-chain functions call no API: the claim proof is an input (`MessageProof`), the shape Solgate's `/v1/messages/:id/proof`
+// serves for a message. Sends and claims on a Rome chain go through the SDK's write paths (`submitRomeTx` for an EVM wallet that
+// asks for it, `submitRomeTxV1` for a Solana wallet).
 import { decodeEventLog, encodeFunctionData, parseAbi, type Hex, type PublicClient, type WalletClient } from "viem";
 import { submitRomeTx } from "./write.js";
 import { submitRomeTxV1, type SolanaLaneV1Deps, type SolanaLaneV1Result } from "./solanaV1.js";
 import { syntheticAddress, type SolanaPubkeyInput } from "./solana.js";
+
+export * from "./messagesApi.js";
 
 /** The bridge's message calls. `bridgeMessage` is payable (value only where the chain's gas token is ETH); `bridgeMessageWETH` burns the bridge's WETH. */
 export const bridgeMessageAbi = parseAbi([
