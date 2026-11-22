@@ -113,7 +113,7 @@ describe("get, proof and the claim steps", () => {
 describe("sendStep", () => {
   it("posts the send to /v1/messages/send and answers the steps, the origin and the warnings", async () => {
     const { api, fetch } = client(() => reply(200, { steps: [{ ...step, chain: "Rome", networkId: 7 }], origin: RECEIVER, warnings: ["receiver_has_no_code"] }));
-    const body = { from: 7, to: 0, receiver: RECEIVER, data: "0xdeadbeef" as Hex, wallet: "0x3403e0de09bc76ca7d74762f264e4f6b649a0562" };
+    const body = { from: 7, to: 0, receiver: RECEIVER, data: "0xdeadbeef" as Hex, wallet: "0x0000000000000000000000000000000000000022" };
     const out = await api.sendStep(body);
     expect(out.origin).toBe(RECEIVER);
     expect(out.warnings).toEqual(["receiver_has_no_code"]);

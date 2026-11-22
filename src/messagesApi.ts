@@ -220,7 +220,7 @@ export interface SolgateMessagesClient {
    * With `solanaWallet` and a destination that is a Rome chain, the step is a `rome-call-from-solana`; anyone may claim, so the wallet need not be the receiver.
    */
   claimStep(id: string, opts?: { solanaWallet?: string }): Promise<ClaimStepAnswer>;
-  /** The claim of up to 10 messages that go to one network: one Multicall3 transaction where the destination has it (`batched: true`), otherwise one step each in order. */
+  /** The claim steps of up to 10 messages that go to one network: one Multicall3 transaction where the destination has it (`batched: true`), otherwise one step each in order. */
   claimSteps(ids: readonly string[], opts?: { solanaWallet?: string }): Promise<ClaimStepsAnswer>;
   /** The steps that send a message (an `evm-tx` to the source bridge, or a `rome-call-from-solana`), with any one-time grant first. Record the sent transaction afterwards with `record`. */
   sendStep(req: SendStepRequest): Promise<SendStepAnswer>;
