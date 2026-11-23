@@ -14,7 +14,7 @@ TypeScript SDK for building on [Rome](https://github.com/rome-protocol) — EVM 
 Repo-first — install from the repo, pinned to a release tag (npm publish is deferred until demand):
 
 ```
-npm install github:rome-protocol/rome-sdk-ts#v0.5.0 viem @solana/web3.js @solana/spl-token
+npm install github:rome-protocol/rome-sdk-ts#v0.6.0 viem @solana/web3.js @solana/spl-token
 ```
 
 Imports use the package name (`@rome-protocol/sdk`) unchanged.
@@ -174,7 +174,7 @@ if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount,
 
 ### The Solgate API client
 
-Solgate tracks messages and hands out the steps to send and claim them (`/v1/messages`). `createMessagesClient` is a typed client for those routes; it never signs or sends, so you pair it with the functions above. The client is in the repo from the first tag after v0.5.0 (v0.6.0); it is not in v0.5.0.
+Solgate tracks messages and hands out the steps to send and claim them (`/v1/messages`). `createMessagesClient` is a typed client for those routes; it never signs or sends, so you pair it with the functions above. The client is in v0.6.0 and later; it is not in v0.5.0.
 
 ```ts
 import { createMessagesClient } from "@rome-protocol/sdk/messages";
