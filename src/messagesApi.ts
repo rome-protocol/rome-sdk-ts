@@ -222,7 +222,7 @@ export interface SolgateMessagesClient {
   claimStep(id: string, opts?: { solanaWallet?: string }): Promise<ClaimStepAnswer>;
   /** The claim steps of up to 10 messages that go to one network: one Multicall3 transaction where the destination has it (`batched: true`), otherwise one step each in order. */
   claimSteps(ids: readonly string[], opts?: { solanaWallet?: string }): Promise<ClaimStepsAnswer>;
-  /** The steps that send a message (an `evm-tx` to the source bridge, or a `rome-call-from-solana`), with any one-time grant first. Record the sent transaction afterwards with `record`. */
+  /** The steps that send a message (an `evm-tx` to the source bridge, or a `rome-call-from-solana`), with any one-time grant first. Record the sent transaction afterwards with `record`. Refuses a zero `receiver` before any request is made. */
   sendStep(req: SendStepRequest): Promise<SendStepAnswer>;
   /**
    * Poll `get` until the message is `ready_to_claim` and answer it; one already `claimed`, `in_rome_account` or `received` is answered at once.
@@ -281,7 +281,10 @@ export function createMessagesClient(opts: SolgateMessagesOptions): SolgateMessa
     proof: (id) => call(`/v1/messages/${enc(id)}/proof`),
     claimStep: (id, o = {}) => call(withWallet(`/v1/messages/${enc(id)}/claim`, o.solanaWallet)),
     claimSteps: (ids, o = {}) => call("/v1/messages/claims", { method: "POST", body: { ids, ...(o.solanaWallet !== undefined && { solanaWallet: o.solanaWallet }) } }),
-    sendStep: (req) => call("/v1/messages/send", { method: "POST", body: req }),
+    async sendStep(req) {
+      if (/^0x0{40}$/i.test(req.receiver)) throw new Error("receiver is the zero address: a message sent there is lost, so no send is built");
+      return call("/v1/messages/send", { method: "POST", body: req });
+    },
     async waitReady(id, o = {}) {
       const interval = o.intervalMs ?? 5_000;
       const deadline = Date.now() + (o.timeoutMs ?? 30 * 60_000);

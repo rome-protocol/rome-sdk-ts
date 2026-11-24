@@ -167,7 +167,7 @@ if (!(await isMessageClaimed(publicClient, destinationBridge, leaf.depositCount,
 ```
 
 - Value out of Rome moves only in whole units of `ROME_WETH_UNIT` (1e9 wei). With `weth: true`, `value` is the WETH amount for `bridgeMessageWETH` and a send that is not a whole multiple throws before anything is sent; the Solana sender takes `amountWETH`. On a Rome chain a WETH send needs an `approve` first: call `approve` on the adapter's wrapper (`adapter.wrapper()`, the adapter being the bridge's `WETHToken()`; 9 decimals) with the adapter as spender for at least `amount / ROME_WETH_UNIT`, as its own call, then send; without it the send reverts, and on the relay route that comes back as a receipt with status `0x0`, not a throw. Value into a Rome chain arrives only in whole units; the remainder below one unit (under 1 gwei) is lost. A plain `bridgeMessage` carries no value on a chain whose gas token is not ETH.
-- A message to the zero address is refused: `encodeBridgeMessage`, `encodeBridgeMessageWETH` and both send helpers throw before anything is built or sent, because nobody can claim it.
+- A message to the zero address is refused: `encodeBridgeMessage`, `encodeBridgeMessageWETH`, both send helpers and the API client's `sendStep` (a zero `receiver`) throw before anything is built or sent, because nobody can claim it.
 - `forceUpdateGlobalExitRoot` defaults to `true`, so a lone message is claimable without waiting for another deposit.
 - Set `rome: true` on `sendMessageFromEvm` / `claimMessageFromEvm` for a bridge on a Rome chain: the call goes through `submitRomeTx` (needs a wallet that signs over JSON-RPC, such as a browser wallet).
 - `messageLeavesOf(receipt, bridge, { includeTokens: true })` also returns token leaves.
