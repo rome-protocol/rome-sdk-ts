@@ -4,11 +4,13 @@
 // per-signature fees and the rent of every NEW account the call creates, which
 // is why a call to a never-used address costs about a million gas and the same
 // call to an existing one about ten thousand. `eth_estimateGas` follows that
-// cost, and Rome charges the gas USED, never the limit. The gas LIMIT is still
-// enforced where Rome has a fee recipient: on a signed send through the proxy
-// (this module) and on the proxy's relay route the call is refused with
-// `InsufficientGas` when the cost exceeds the limit, and the sender's balance
-// must cover limit x price. Only a transaction with no fee recipient ignores
+// cost, and Rome charges the gas USED, never the limit. The proxy answers
+// max(cost, 21,000) to `eth_estimateGas`. The gas LIMIT is still enforced where
+// Rome has a fee recipient: on a signed send through the proxy (this module) and
+// on the proxy's relay route the call is refused with `InsufficientGas` when the
+// cost exceeds the limit. The sender's balance must cover limit x price on an
+// iterative or relayed call (the program checks it there), and a browser wallet
+// requires it before it signs. Only a transaction with no fee recipient ignores
 // its limit: a DoTxUnsigned (the Solana wallet's one-signature route) and the
 // v1 lane's atomic transaction; the wallet pays the real lamports. A v1
 // payload can still be relayed, and the relay enforces its limit. So
@@ -21,8 +23,9 @@
 // route them through here.
 //
 //   1. `eth_estimateGas` can UNDERCOUNT Solana-CPI cost (SPL transfers, ATA
-//      creation, cached-wrapper ops) by the time the tx is sent: accounts can
-//      be created or the price can move between the estimate and the send.
+//      creation, cached-wrapper ops) by the time the tx is sent: the call can
+//      need a new account, or the Solana priority fee (part of the gas) can move,
+//      between the estimate and the send.
 //      Submitting at the bare estimate then fails with `InsufficientGas` even
 //      though `eth_call` / `eth_estimateGas` passed (neither enforces a limit).
 //      The 1.3x pad covers that estimate-to-send gap; it is not the cost model.
@@ -33,10 +36,12 @@
 //      {@link DEFAULT_ROME_GAS_FALLBACK}). A ceiling is a last resort: a wallet
 //      must hold ceiling x price to send it.
 //
-// Rome also answers an `eth_estimateGas` of exactly 21,000 ({@link
-// ROME_ESTIMATE_FLOOR}) when its emulation fails, and the same 21,000 for a
-// call that really costs that little (a transfer to an existing account, a
-// view). The SDK cannot tell the two apart, so it pads either. A caller that
+// Because the proxy answers max(cost, 21,000), 21,000 ({@link
+// ROME_ESTIMATE_FLOOR}) is both the floor for a call that allocates nothing (a
+// transfer to an existing account really costs about 10,001) and the answer
+// when its emulation fails. The SDK cannot tell the two apart, so it pads either.
+// (With priority lamports a failed ATOMIC emulation can answer above 21,000,
+// which `requireEstimate` does not catch; that is no worse than without it.) A caller that
 // KNOWS its call creates at least one new account (so its real cost is far above
 // 21,000) sets `requireEstimate: true`: then 21,000 and a thrown estimate both
 // count as no estimate, and the send stops with {@link RomeEstimateUnavailableError}
@@ -77,7 +82,7 @@ export function sizeFromEstimate(
 ): bigint {
   const usable = estimate !== undefined && !(o.requireEstimate === true && estimate === ROME_ESTIMATE_FLOOR);
   if (usable) return padRomeGas(estimate);
-  if (o.fallbackGas !== undefined) return o.fallbackGas;
+  if (o.fallbackGas != null) return o.fallbackGas;
   if (o.requireEstimate === true) {
     throw new RomeEstimateUnavailableError(estimate === undefined ? "the estimate failed" : "the estimate is Rome's 21,000 failure answer");
   }
@@ -195,7 +200,7 @@ export interface RomeTxRequest {
    * (same-reverting) estimation, and the wallet renders "Network fee:
    * Unavailable" and blocks the tx. A USABLE estimate always wins (padded 1.3x);
    * this is a last resort. When omitted, {@link DEFAULT_ROME_GAS_FALLBACK} is
-   * used on estimate failure (never left unset). Pass a value only to override
+   * used on estimate failure (never left unset, unless `requireEstimate` stops the send). Pass a value only to override
    * the default (e.g. an op heavier than the default ceiling).
    */
   fallbackGas?: bigint;

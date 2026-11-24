@@ -173,6 +173,24 @@ describe("submitRomeTx", () => {
       expect(sentTx(floor).gas).toBe("0x1234");
     });
 
+    it("a usable estimate beats fallbackGas, with or without requireEstimate", async () => {
+      for (const requireEstimate of [undefined, true]) {
+        const p = mockProvider({ ...base, eth_estimateGas: () => "0x64" });
+        await submitRomeTx(p, { ...req, requireEstimate, fallbackGas: 0x1234n });
+        expect(sentTx(p).gas).toBe("0x82");
+      }
+    });
+
+    it("fallbackGas: null (an untyped JS caller) is treated like undefined: the 250M default, as on main", async () => {
+      const nul = null as unknown as bigint;
+      const p = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
+      await submitRomeTx(p, { ...req, fallbackGas: nul });
+      expect(BigInt(sentTx(p).gas)).toBe(DEFAULT_ROME_GAS_FALLBACK);
+      const q = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
+      await expect(submitRomeTx(q, { ...req, requireEstimate: true, fallbackGas: nul })).rejects.toBeInstanceOf(RomeEstimateUnavailableError);
+      expect(sent(q)).toBe(false);
+    });
+
     it("a real estimate is padded as always, and 21,001 is a real estimate", async () => {
       const p = mockProvider({ ...base, eth_estimateGas: () => "0x64" });
       await submitRomeTx(p, { ...req, requireEstimate: true });

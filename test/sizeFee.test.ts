@@ -37,4 +37,15 @@ describe("sizeSolanaLaneFee", () => {
     expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x5208").fetchImpl, requireEstimate: true, fallbackGas: 5_000_000n })).gasLimit).toBe(5_000_000n);
     expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x64").fetchImpl, requireEstimate: true })).gasLimit).toBe(130n);
   });
+
+  it("fallbackGas: null is treated like undefined: the 250M default, and a stop under requireEstimate", async () => {
+    const nul = null as unknown as bigint;
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl, fallbackGas: nul })).gasLimit).toBe(DEFAULT_ROME_GAS_FALLBACK);
+    await expect(sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl, requireEstimate: true, fallbackGas: nul })).rejects.toBeInstanceOf(RomeEstimateUnavailableError);
+  });
+
+  it("a usable estimate beats fallbackGas", async () => {
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x64").fetchImpl, fallbackGas: 0x1234n })).gasLimit).toBe(130n);
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x64").fetchImpl, requireEstimate: true, fallbackGas: 0x1234n })).gasLimit).toBe(130n);
+  });
 });
