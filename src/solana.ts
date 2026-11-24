@@ -247,8 +247,8 @@ export interface FeeFields {
  *
  * The ceiling is harmless on a transaction with no fee recipient (a DoTxUnsigned,
  * or the v1 lane's atomic transaction: both ignore the limit)
- * but not on the relay route, which enforces the limit and needs the sender's
- * balance to cover limit x price. With `requireEstimate`, an estimate that
+ * but not on the relay route, which enforces the limit and, for a call it runs
+ * iteratively, needs the sender's balance to cover limit x price. With `requireEstimate`, an estimate that
  * throws or is exactly 21,000 (Rome's answer when its emulation fails) stops
  * with `RomeEstimateUnavailableError` unless `fallbackGas` is given.
  */

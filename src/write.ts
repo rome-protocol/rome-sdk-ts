@@ -8,9 +8,10 @@
 // max(cost, 21,000) to `eth_estimateGas`. The gas LIMIT is still enforced where
 // Rome has a fee recipient: on a signed send through the proxy (this module) and
 // on the proxy's relay route the call is refused with `InsufficientGas` when the
-// cost exceeds the limit. The sender's balance must cover limit x price on an
-// iterative or relayed call (the program checks it there), and a browser wallet
-// requires it before it signs. Only a transaction with no fee recipient ignores
+// cost exceeds the limit. The sender's balance must cover limit x price on a
+// call that runs iteratively (the program checks it when the call starts; an
+// atomic call, relayed or not, is checked only for cost above the limit), and a
+// browser wallet requires it before it signs. Only a transaction with no fee recipient ignores
 // its limit: a DoTxUnsigned (the Solana wallet's one-signature route) and the
 // v1 lane's atomic transaction; the wallet pays the real lamports. A v1
 // payload can still be relayed, and the relay enforces its limit. So
@@ -103,8 +104,8 @@ export function padRomeGas(estimate: bigint): bigint {
  * constructor that CPIs to load an SPL mint) REVERT under estimation, so there's
  * nothing to pad. Prefer the real (padded) estimate when the chain can produce
  * one; fall back to a caller-supplied ceiling when it can't. A ceiling is a last
- * resort: on a signed send or the relay route the limit is enforced and the
- * wallet must hold ceiling x price; only a transaction with no fee recipient (a DoTxUnsigned, or the v1
+ * resort: on a signed send or the relay route the limit is enforced, and a
+ * browser wallet, or a call that runs iteratively, must hold ceiling x price; only a transaction with no fee recipient (a DoTxUnsigned, or the v1
  * lane's atomic transaction) ignores it.
  * A caller that must not sign a guess (21,000 or a thrown estimate) uses
  * {@link sizeFromEstimate} with `requireEstimate` instead.
