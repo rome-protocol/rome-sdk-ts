@@ -4,8 +4,9 @@
 // per-signature fees and the rent of every NEW account the call creates, which
 // is why a call to a never-used address costs about a million gas and the same
 // call to an existing one about ten thousand. `eth_estimateGas` follows that
-// cost, and Rome charges the gas USED, never the limit. The proxy answers
-// max(cost, 21,000) to `eth_estimateGas`. The gas LIMIT is still enforced where
+// cost, and Rome charges the gas USED, never the limit. For an emulation that
+// SUCCEEDS the proxy answers max(cost, 21,000) to `eth_estimateGas`; an emulation
+// that fails is an ERROR, not 21,000. The gas LIMIT is still enforced where
 // Rome has a fee recipient: on a signed send through the proxy (this module) and
 // on the proxy's relay route the call is refused with `InsufficientGas` when the
 // cost exceeds the limit. The sender's balance must cover limit x price on a
@@ -24,12 +25,16 @@
 // route them through here.
 //
 //   1. `eth_estimateGas` can UNDERCOUNT Solana-CPI cost (SPL transfers, ATA
-//      creation, cached-wrapper ops) by the time the tx is sent: the call can
-//      need a new account, or the Solana priority fee (part of the gas) can move,
-//      between the estimate and the send.
+//      creation, cached-wrapper ops) by the time the tx is sent: the Solana
+//      priority fee (part of the gas) can move, or the call can come to need a
+//      new account it did not need at the estimate (an estimate taken from
+//      another sender or at an older state), between the estimate and the send.
 //      Submitting at the bare estimate then fails with `InsufficientGas` even
 //      though `eth_call` / `eth_estimateGas` passed (neither enforces a limit).
-//      The 1.3x pad covers that estimate-to-send gap; it is not the cost model.
+//      The 1.3x pad covers small moves such as the priority fee; it is not the
+//      cost model and does not cover a new account created between the estimate
+//      and the send. For a call that may allocate, take the estimate from the
+//      real sender just before the send: it then includes the allocation.
 //   2. Some CPI-heavy writes REVERT under `eth_estimateGas` (they only succeed
 //      inside a real tx). Then the wallet runs its own (same-reverting) estimate
 //      and renders "Network fee: Unavailable", blocking the send. We hand the
@@ -37,17 +42,17 @@
 //      {@link DEFAULT_ROME_GAS_FALLBACK}). A ceiling is a last resort: a wallet
 //      must hold ceiling x price to send it.
 //
-// Because the proxy answers max(cost, 21,000), 21,000 ({@link
-// ROME_ESTIMATE_FLOOR}) is both the floor for a call that allocates nothing (a
-// transfer to an existing account really costs about 10,001) and the answer
-// when its emulation fails. The SDK cannot tell the two apart, so it pads either.
-// (With priority lamports a failed ATOMIC emulation can answer above 21,000,
-// which `requireEstimate` does not catch; that is no worse than without it.) A caller that
-// KNOWS its call creates at least one new account (so its real cost is far above
-// 21,000) sets `requireEstimate: true`: then 21,000 and a thrown estimate both
-// count as no estimate, and the send stops with {@link RomeEstimateUnavailableError}
-// instead of signing a guess. A write that creates nothing (a role change, a
-// pause, a repeat grant) legitimately estimates 21,000 and must not set it.
+// 21,000 ({@link ROME_ESTIMATE_FLOOR}) is the floor of a SUCCESSFUL emulation: the
+// emulation, at its state and from that sender, cost at most 21,000 and saw no new
+// account (a transfer to an existing account really costs about 10,001 and
+// correctly answers 21,000). It is not a failure signal: a failed emulation (a
+// revert, say) is an error, and the SDK treats a thrown estimate as the only "no
+// estimate". Every estimate, 21,000 included, is padded 1.3x. A caller that must
+// not sign a guess sets `requireEstimate: true`: a thrown estimate then stops the
+// send with {@link RomeEstimateUnavailableError} instead of signing the fixed
+// ceiling. A 21,000 answer is never a stop: it says the call, from that sender at
+// that moment, allocated nothing. For a call that may allocate, take the estimate
+// from the real sender just before the send.
 
 /** Gas-estimate safety factor (1.3x): covers the gap between the estimate and the send. */
 export const ROME_GAS_PAD_NUMERATOR = 13n;
@@ -62,9 +67,9 @@ export const ROME_GAS_PAD_DENOMINATOR = 10n;
 export const DEFAULT_ROME_GAS_FALLBACK = 250_000_000n;
 
 /**
- * The answer Rome's `eth_estimateGas` gives when its emulation fails. It is also
- * the true answer for a call that creates nothing and costs next to nothing, so
- * it is treated as "no estimate" only for a call sent with `requireEstimate`.
+ * The floor of Rome's `eth_estimateGas` for an emulation that succeeds: the
+ * answer is max(cost, 21,000). A failed emulation is an error, not this value, so
+ * 21,000 is a real estimate (the call saw no new account) and is padded like any other.
  */
 export const ROME_ESTIMATE_FLOOR = 21_000n;
 
@@ -81,12 +86,9 @@ export function sizeFromEstimate(
   estimate: bigint | undefined,
   o: { requireEstimate?: boolean; fallbackGas?: bigint },
 ): bigint {
-  const usable = estimate !== undefined && !(o.requireEstimate === true && estimate === ROME_ESTIMATE_FLOOR);
-  if (usable) return padRomeGas(estimate);
+  if (estimate !== undefined) return padRomeGas(estimate);
   if (o.fallbackGas != null) return o.fallbackGas;
-  if (o.requireEstimate === true) {
-    throw new RomeEstimateUnavailableError(estimate === undefined ? "the estimate failed" : "the estimate is Rome's 21,000 failure answer");
-  }
+  if (o.requireEstimate === true) throw new RomeEstimateUnavailableError("the estimate failed");
   return DEFAULT_ROME_GAS_FALLBACK;
 }
 
@@ -107,7 +109,7 @@ export function padRomeGas(estimate: bigint): bigint {
  * resort: on a signed send or the relay route the limit is enforced, and a
  * browser wallet, or a call that runs iteratively, must hold ceiling x price; only a transaction with no fee recipient (a DoTxUnsigned, or the v1
  * lane's atomic transaction) ignores it.
- * A caller that must not sign a guess (21,000 or a thrown estimate) uses
+ * A caller that must not sign a guess (a thrown estimate) uses
  * {@link sizeFromEstimate} with `requireEstimate` instead.
  *
  * @param estimate        returns the raw `eth_estimateGas` result (bigint)
@@ -196,7 +198,7 @@ export interface RomeTxRequest {
   /** Native value in wei; serialized to a hex quantity when present. */
   value?: bigint;
   /**
-   * Explicit gas ceiling used ONLY when `eth_estimateGas` throws (or, with `requireEstimate`, answers 21,000). Without it, an
+   * Explicit gas ceiling used ONLY when `eth_estimateGas` throws. Without it, an
    * estimate revert makes submitRomeTx omit `gas`, the wallet runs its own
    * (same-reverting) estimation, and the wallet renders "Network fee:
    * Unavailable" and blocks the tx. A USABLE estimate always wins (padded 1.3x);
@@ -206,15 +208,15 @@ export interface RomeTxRequest {
    */
   fallbackGas?: bigint;
   /**
-   * Set it only for a call known to create at least one new account, so its real
-   * cost is far above 21,000. A write that creates nothing (a role change, a
-   * pause, a repeat grant) legitimately estimates 21,000 and must not set it.
-   * An estimate of exactly 21,000 ({@link ROME_ESTIMATE_FLOOR}, Rome's answer
-   * when its emulation fails) counts as no estimate, like a thrown one,
-   * and with no `fallbackGas` the send stops with
-   * {@link RomeEstimateUnavailableError} before anything is signed, instead of
-   * signing the fixed {@link DEFAULT_ROME_GAS_FALLBACK} ceiling. A wallet that
-   * holds less than ceiling x price could not send that ceiling anyway.
+   * Stop instead of signing a guess. When `eth_estimateGas` throws (Rome answers
+   * a failed emulation with an error) and there is no `fallbackGas`, the send
+   * stops with {@link RomeEstimateUnavailableError} before anything is signed,
+   * instead of signing the fixed {@link DEFAULT_ROME_GAS_FALLBACK} ceiling. A
+   * wallet that holds less than ceiling x price could not send that ceiling
+   * anyway. An answer of 21,000 ({@link ROME_ESTIMATE_FLOOR}) is a real estimate,
+   * the floor of a successful emulation that saw no new account, and is padded
+   * like any other. For a call that may create an account, take the estimate
+   * from the real sender just before the send.
    * Default false: the send behaves as it always did.
    */
   requireEstimate?: boolean;
