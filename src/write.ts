@@ -26,8 +26,9 @@
 //
 //   1. `eth_estimateGas` can UNDERCOUNT Solana-CPI cost (SPL transfers, ATA
 //      creation, cached-wrapper ops) by the time the tx is sent: the Solana
-//      priority fee (part of the gas) can move, or an account the call needs
-//      can be created, between the estimate and the send.
+//      priority fee (part of the gas) can move, or the call can come to need a
+//      new account it did not need at the estimate (an estimate taken from
+//      another sender or at an older state), between the estimate and the send.
 //      Submitting at the bare estimate then fails with `InsufficientGas` even
 //      though `eth_call` / `eth_estimateGas` passed (neither enforces a limit).
 //      The 1.3x pad covers small moves such as the priority fee; it is not the
