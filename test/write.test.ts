@@ -8,6 +8,8 @@ import {
   ROME_GAS_PAD_NUMERATOR,
   ROME_GAS_PAD_DENOMINATOR,
   DEFAULT_ROME_GAS_FALLBACK,
+  ROME_ESTIMATE_FLOOR,
+  RomeEstimateUnavailableError,
   ROME_MAX_FEE_HEADROOM_NUMERATOR,
   ROME_MAX_FEE_HEADROOM_DENOMINATOR,
 } from "../src/index.js";
@@ -121,6 +123,59 @@ describe("submitRomeTx", () => {
     const noFallback = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
     await submitRomeTx(noFallback, req);
     expect(BigInt(sentTx(noFallback).gas)).toBe(DEFAULT_ROME_GAS_FALLBACK);
+  });
+
+  describe("requireEstimate (the call needs a real estimate)", () => {
+    const base = {
+      eth_getBlockByNumber: () => ({ baseFeePerGas: "0x0" }),
+      eth_maxPriorityFeePerGas: () => "0x0",
+      eth_gasPrice: () => "0x5",
+      eth_sendTransaction: () => "0xhash",
+    };
+    const sent = (p: ReturnType<typeof mockProvider>) => p.calls.some((c) => c.method === "eth_sendTransaction");
+
+    it("the floor constant is Rome's 21,000 answer", () => {
+      expect(ROME_ESTIMATE_FLOOR).toBe(21_000n);
+    });
+
+    it("default behaviour is unchanged: an estimate of 21,000 is padded and signed, a throw takes the 250M ceiling", async () => {
+      const floor = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
+      await submitRomeTx(floor, req);
+      expect(BigInt(sentTx(floor).gas)).toBe(27_300n);
+      const thrown = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
+      await submitRomeTx(thrown, req);
+      expect(BigInt(sentTx(thrown).gas)).toBe(DEFAULT_ROME_GAS_FALLBACK);
+    });
+
+    it("a thrown estimate stops before anything is signed", async () => {
+      const p = mockProvider({ ...base, eth_estimateGas: () => new Error("execution reverted") });
+      await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toBeInstanceOf(RomeEstimateUnavailableError);
+      expect(sent(p)).toBe(false);
+    });
+
+    it("an estimate of exactly 21,000 counts as no estimate", async () => {
+      const p = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
+      await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toThrow(/no usable gas estimate/);
+      expect(sent(p)).toBe(false);
+    });
+
+    it("an explicit fallbackGas is still used when the estimate is missing or 21,000", async () => {
+      const thrown = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
+      await submitRomeTx(thrown, { ...req, requireEstimate: true, fallbackGas: 0x1234n });
+      expect(sentTx(thrown).gas).toBe("0x1234");
+      const floor = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
+      await submitRomeTx(floor, { ...req, requireEstimate: true, fallbackGas: 0x1234n });
+      expect(sentTx(floor).gas).toBe("0x1234");
+    });
+
+    it("a real estimate is padded as always, and 21,001 is a real estimate", async () => {
+      const p = mockProvider({ ...base, eth_estimateGas: () => "0x64" });
+      await submitRomeTx(p, { ...req, requireEstimate: true });
+      expect(sentTx(p).gas).toBe("0x82");
+      const q = mockProvider({ ...base, eth_estimateGas: () => "0x5209" });
+      await submitRomeTx(q, { ...req, requireEstimate: true });
+      expect(BigInt(sentTx(q).gas)).toBe(27_301n);
+    });
   });
 
   it("minGas floors the final gas (only raises)", async () => {
