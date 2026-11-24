@@ -153,6 +153,11 @@ describe("submitRomeTx", () => {
       expect(sent(p)).toBe(false);
     });
 
+    it("the error names both ways out: fallbackGas, or fee on the V1 lane", async () => {
+      const p = mockProvider({ ...base, eth_estimateGas: () => new Error("execution reverted") });
+      await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toThrow(/fallbackGas, or fee on the V1 lane/);
+    });
+
     it("an estimate of exactly 21,000 counts as no estimate", async () => {
       const p = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
       await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toThrow(/no usable gas estimate/);

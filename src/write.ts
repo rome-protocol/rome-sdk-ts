@@ -35,11 +35,13 @@
 // ROME_ESTIMATE_FLOOR}) when its emulation fails, and the same 21,000 for a
 // call that really costs that little (a transfer to an existing account, a
 // view). The SDK cannot tell the two apart, so it pads either. A caller that
-// KNOWS its call creates accounts or writes state sets `requireEstimate: true`:
-// then 21,000 and a thrown estimate both count as no estimate, and the send
-// stops with {@link RomeEstimateUnavailableError} instead of signing a guess.
+// KNOWS its call creates at least one new account (so its real cost is far above
+// 21,000) sets `requireEstimate: true`: then 21,000 and a thrown estimate both
+// count as no estimate, and the send stops with {@link RomeEstimateUnavailableError}
+// instead of signing a guess. A write that creates nothing (a role change, a
+// pause, a repeat grant) legitimately estimates 21,000 and must not set it.
 
-/** Gas-estimate safety factor (1.3x) covering Rome's SPL-CPI undercount. */
+/** Gas-estimate safety factor (1.3x): covers the gap between the estimate and the send. */
 export const ROME_GAS_PAD_NUMERATOR = 13n;
 export const ROME_GAS_PAD_DENOMINATOR = 10n;
 
@@ -61,7 +63,7 @@ export const ROME_ESTIMATE_FLOOR = 21_000n;
 /** Thrown, before anything is signed, when a call that requires a real estimate has none. */
 export class RomeEstimateUnavailableError extends Error {
   constructor(reason: string) {
-    super(`no usable gas estimate: ${reason}. Pass an explicit fallbackGas, or send the call again once its estimate works.`);
+    super(`no usable gas estimate: ${reason}. Pass an explicit gas limit (fallbackGas, or fee on the V1 lane), or send the call again once its estimate works.`);
     this.name = "RomeEstimateUnavailableError";
   }
 }
@@ -82,7 +84,7 @@ export function sizeFromEstimate(
 
 /**
  * Pad an `eth_estimateGas` result by the Rome safety factor (1.3x) to cover
- * Rome's SPL-CPI undercount. Integer bigint math; truncates the fractional unit.
+ * the estimate-to-send gap. Integer bigint math; truncates the fractional unit.
  */
 export function padRomeGas(estimate: bigint): bigint {
   return (estimate * ROME_GAS_PAD_NUMERATOR) / ROME_GAS_PAD_DENOMINATOR;
@@ -93,8 +95,11 @@ export function padRomeGas(estimate: bigint): bigint {
  * estimate fine and just need the {@link padRomeGas} 1.3x bump; a few (e.g. a
  * constructor that CPIs to load an SPL mint) REVERT under estimation, so there's
  * nothing to pad. Prefer the real (padded) estimate when the chain can produce
- * one; fall back to a caller-supplied ceiling when it can't. Over-provisioning
- * is free on Rome's cost model.
+ * one; fall back to a caller-supplied ceiling when it can't. A ceiling is a last
+ * resort: on a signed send or the relay route the limit is enforced and the
+ * wallet must hold ceiling x price; only a DoTxUnsigned transaction ignores it.
+ * A caller that must not sign a guess (21,000 or a thrown estimate) uses
+ * {@link sizeFromEstimate} with `requireEstimate` instead.
  *
  * @param estimate        returns the raw `eth_estimateGas` result (bigint)
  * @param fallbackCeiling explicit gas to use when `estimate` throws
@@ -192,9 +197,11 @@ export interface RomeTxRequest {
    */
   fallbackGas?: bigint;
   /**
-   * Set it for a call known to create accounts or write state, where a guess is
-   * wrong: an estimate of exactly 21,000 ({@link ROME_ESTIMATE_FLOOR}, Rome's
-   * answer when its emulation fails) counts as no estimate, like a thrown one,
+   * Set it only for a call known to create at least one new account, so its real
+   * cost is far above 21,000. A write that creates nothing (a role change, a
+   * pause, a repeat grant) legitimately estimates 21,000 and must not set it.
+   * An estimate of exactly 21,000 ({@link ROME_ESTIMATE_FLOOR}, Rome's answer
+   * when its emulation fails) counts as no estimate, like a thrown one,
    * and with no `fallbackGas` the send stops with
    * {@link RomeEstimateUnavailableError} before anything is signed, instead of
    * signing the fixed {@link DEFAULT_ROME_GAS_FALLBACK} ceiling. A wallet that

@@ -323,7 +323,10 @@ type V1Call = EvmCall & {
   nonce?: bigint;
   fee?: FeeFields;
   /**
-   * The call needs a real gas estimate: with none (the estimate throws or is
+   * The call needs a real gas estimate. Set it only for a call known to create at
+   * least one new account, so its real cost is far above 21,000; a write that
+   * creates nothing (a role change, a pause, a repeat grant) legitimately
+   * estimates 21,000 and must not set it. With no estimate (it throws, or is
    * exactly 21,000, Rome's answer when its emulation fails) the call stops with
    * `RomeEstimateUnavailableError` before anything is signed, instead of signing
    * the fixed ceiling. The same payload can be relayed, and the relay route
