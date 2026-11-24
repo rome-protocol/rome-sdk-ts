@@ -8,9 +8,11 @@
 // enforced where Rome has a fee recipient: on a signed send through the proxy
 // (this module) and on the proxy's relay route the call is refused with
 // `InsufficientGas` when the cost exceeds the limit, and the sender's balance
-// must cover limit x price. Only a DoTxUnsigned transaction (the Solana
-// wallet's one-signature route) ignores its limit; the wallet pays the real
-// lamports. So over-provisioning is not free: a limit far above the cost makes
+// must cover limit x price. Only a transaction with no fee recipient ignores
+// its limit: a DoTxUnsigned (the Solana wallet's one-signature route) and the
+// v1 lane's atomic transaction; the wallet pays the real lamports. A v1
+// payload can still be relayed, and the relay enforces its limit. So
+// over-provisioning is not free: a limit far above the cost makes
 // a wallet that holds less than limit x price unable to send.
 //
 // Two Rome-specific quirks make a naive `eth_sendTransaction` fail or render a
@@ -97,7 +99,8 @@ export function padRomeGas(estimate: bigint): bigint {
  * nothing to pad. Prefer the real (padded) estimate when the chain can produce
  * one; fall back to a caller-supplied ceiling when it can't. A ceiling is a last
  * resort: on a signed send or the relay route the limit is enforced and the
- * wallet must hold ceiling x price; only a DoTxUnsigned transaction ignores it.
+ * wallet must hold ceiling x price; only a transaction with no fee recipient (a DoTxUnsigned, or the v1
+ * lane's atomic transaction) ignores it.
  * A caller that must not sign a guess (21,000 or a thrown estimate) uses
  * {@link sizeFromEstimate} with `requireEstimate` instead.
  *

@@ -504,6 +504,25 @@ describe("submitRomeTxV1", () => {
       }
     });
 
+    it("relayV1 with requireEstimate: no estimate stops before anything is signed or relayed", async () => {
+      for (const estimate of [() => ({ error: { code: 3, message: "execution reverted" } }), () => "0x5208"]) {
+        const signer = spySigner();
+        const { conn, asConnection } = fakeConnection();
+        const proxy = stubProxy({
+          eth_getTransactionCount: () => "0x4",
+          eth_estimateGas: estimate,
+          eth_getBlockByNumber: () => ({ baseFeePerGas: "0x5" }),
+          rome_relayUnsignedV1: relayAnswer,
+        });
+        await expect(
+          relayV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, { to: TOKEN, data: "0xdeadbeef", requireEstimate: true }),
+        ).rejects.toThrow(/no usable gas estimate/);
+        expect(signer.auth).not.toHaveBeenCalled();
+        expect(proxy.of("rome_relayUnsignedV1")).toHaveLength(0);
+        expect(conn.sendRawTransaction).not.toHaveBeenCalled();
+      }
+    });
+
     it("propagates the refusal when relayOnRefusal is false", async () => {
       const proxy = stubProxy({ rome_composeUnsignedAtomicV1: refusal, rome_relayUnsignedV1: () => "0xfeed" });
       await expect(

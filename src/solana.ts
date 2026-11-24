@@ -245,7 +245,8 @@ export interface FeeFields {
  * EVM JSON-RPC — mirrors `submitRomeTx`: a padded `eth_estimateGas` (1.3×) with
  * a fallback ceiling on revert, plus real base + tip fee fields.
  *
- * The ceiling is harmless on a DoTxUnsigned transaction (it ignores its limit)
+ * The ceiling is harmless on a transaction with no fee recipient (a DoTxUnsigned,
+ * or the v1 lane's atomic transaction: both ignore the limit)
  * but not on the relay route, which enforces the limit and needs the sender's
  * balance to cover limit x price. With `requireEstimate`, an estimate that
  * throws or is exactly 21,000 (Rome's answer when its emulation fails) stops
