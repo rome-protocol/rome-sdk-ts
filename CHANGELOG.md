@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A message to the zero address is refused: `encodeBridgeMessage`, `encodeBridgeMessageWETH`, `sendMessageFromEvm`, `sendMessageFromSolanaWallet` and the API client's `sendStep` (a zero `receiver`) throw before anything is built or sent.
+
 ## 0.6.0
 
 - Add the Solgate messages API client to `@rome-protocol/sdk/messages`: `createMessagesClient({ base })` with `record`, `list` (by `wallet`, `sender`, `receiver`, or a `since` feed), `get`, `proof`, `claimStep`, `claimSteps` (up to 10 together), `sendStep` and `waitReady` (it retries a rate limit, an unavailable upstream and network errors), typed answers, and `SolgateApiError` with the API's codes (`SOLGATE_ERROR_CODES`). It signs and sends nothing.

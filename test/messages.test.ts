@@ -61,6 +61,30 @@ describe("send encoders", () => {
     expect(encodeBridgeMessageWETH({ ...rest, amountWETH: ROME_WETH_UNIT })).toBe(encodeBridgeMessageWETH({ ...rest, amountWETH: ROME_WETH_UNIT, forceUpdateGlobalExitRoot: true }));
   });
 
+  it("neither encoder builds a send to address 0, in any case of the digits or with any other fields", () => {
+    const ZERO = `0x${"0".repeat(40)}` as Hex;
+    expect(() => encodeBridgeMessage({ ...MSG, destinationAddress: ZERO })).toThrow(/zero address/);
+    expect(() => encodeBridgeMessage({ ...MSG, destinationAddress: "0X0000000000000000000000000000000000000000" as Hex })).toThrow(/zero address/);
+    expect(() => encodeBridgeMessage({ ...MSG, destinationNetwork: 0, destinationAddress: ZERO, forceUpdateGlobalExitRoot: true })).toThrow(/zero address/);
+    expect(() => encodeBridgeMessageWETH({ ...MSG, destinationAddress: ZERO, amountWETH: ROME_WETH_UNIT })).toThrow(/zero address/);
+  });
+
+  it("an address that only starts or ends with zeros is still built", () => {
+    for (const a of [`0x${"0".repeat(39)}1`, `0x1${"0".repeat(39)}`] as Hex[]) {
+      expect(() => encodeBridgeMessage({ ...MSG, destinationAddress: a })).not.toThrow();
+      expect(() => encodeBridgeMessageWETH({ ...MSG, destinationAddress: a, amountWETH: ROME_WETH_UNIT })).not.toThrow();
+    }
+  });
+
+  it("the send helpers refuse a zero destination before anything is sent", async () => {
+    const ZERO = `0x${"0".repeat(40)}` as Hex;
+    const walletClient = { account: { address: RECEIVER }, chain: undefined, sendTransaction: vi.fn() } as unknown as WalletClient;
+    await expect(sendMessageFromEvm(walletClient, { bridge: BRIDGE, message: { ...MSG, destinationAddress: ZERO } })).rejects.toThrow(/zero address/);
+    expect(walletClient.sendTransaction).not.toHaveBeenCalled();
+    await expect(sendMessageFromSolanaWallet({} as SolanaLaneV1Deps, { bridge: BRIDGE, message: { ...MSG, destinationAddress: ZERO } })).rejects.toThrow(/zero address/);
+    expect(submitMock).not.toHaveBeenCalled();
+  });
+
   it("ROME_WETH_UNIT is 1e9 wei", () => expect(ROME_WETH_UNIT).toBe(1_000_000_000n));
 });
 

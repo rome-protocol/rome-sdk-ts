@@ -121,6 +121,17 @@ describe("sendStep", () => {
   });
 });
 
+describe("sendStep zero receiver", () => {
+  it("refuses a zero receiver, in any case of the digits, before any request is made", async () => {
+    const { api, fetch } = client(() => reply(200, { steps: [], origin: RECEIVER, warnings: [] }));
+    const base = { from: 7, to: 0, data: "0xdeadbeef" as Hex, wallet: "0x0000000000000000000000000000000000000022" };
+    await expect(api.sendStep({ ...base, receiver: `0x${"0".repeat(40)}` as Hex })).rejects.toThrow(/zero address/);
+    await expect(api.sendStep({ ...base, receiver: `0X${"0".repeat(40)}` as Hex })).rejects.toThrow(/zero address/);
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(api.sendStep({ ...base, receiver: `0x${"0".repeat(39)}1` as Hex })).resolves.toBeDefined();
+  });
+});
+
 describe("errors", () => {
   it("a refusal is a SolgateApiError with the API's status, code, words and extra fields", async () => {
     const { api } = client(() => reply(409, { error: "claim_token_first", message: "Claim the token first.", claimAfter: 12 }));
