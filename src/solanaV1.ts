@@ -6,7 +6,7 @@
  * sends no ComputeBudget instructions, treasure wallet or account list. The same
  * wallet key signs twice, over two different messages:
  *  1. an authorization over the readable text `Rome authorization\n0x<hash>`
- *     (`<hash>` = the EVM transaction hash), sent with the compose request;
+ *     (`<hash>` = the authorization hash of the payload), sent with the compose request;
  *  2. the Solana transaction signature over the composed v1 message.
  *
  * A call too large for one atomic transaction is refused by the composer; the
@@ -34,9 +34,37 @@ import { compileV1Message } from "./v1Message.js";
 /** The text a wallet shows for the authorization signature, up to the hash. */
 export const ED25519_AUTH_MESSAGE_PREFIX = "Rome authorization\n0x";
 
-/** The EVM transaction hash of an unsigned EIP-1559 payload: `keccak256(0x02 ‖ rlp)`. */
+/**
+ * The authorization (signing) hash of an unsigned EIP-1559 payload: `keccak256(0x02 ‖ rlp)`.
+ * This is what the wallet authorizes and the program checks. It is the EVM
+ * transaction hash only on chains that still use it as the id; see {@link evmTxIdFor}.
+ */
 export function authHashFor(unsignedRlp: Hex): Uint8Array {
   return keccak256(concatHex(["0x02", unsignedRlp]), "bytes");
+}
+
+/** Domain tag of the sender-bound transaction id (16 ASCII bytes). */
+export const TX_ID_TAG = "RomeSolanaV1TxId";
+
+const bytesOfHex = (v: Hex | Uint8Array, len: number, what: string): Uint8Array => {
+  const b = typeof v === "string" ? hexToBytes(v) : v;
+  if (b.length !== len) throw new Error(`${what} must be ${len} bytes (got ${b.length})`);
+  return b;
+};
+
+/**
+ * The sender-bound EVM transaction id of a Solana-wallet call:
+ * `keccak256("RomeSolanaV1TxId" ‖ signingHash ‖ ed25519Pubkey)` (16 + 32 + 32 bytes).
+ * Two wallets sending the same payload get different ids. `signingHash` is
+ * {@link authHashFor}'s output, and `pubkey` is the wallet's raw 32-byte key.
+ */
+export function evmTxIdFor(signingHash: Hex | Uint8Array, pubkey: PublicKey | Uint8Array | Hex): Hex {
+  const key = pubkey instanceof PublicKey ? pubkey.toBytes() : pubkey;
+  const input = new Uint8Array(80);
+  input.set(new TextEncoder().encode(TX_ID_TAG), 0);
+  input.set(bytesOfHex(signingHash, 32, "signingHash"), 16);
+  input.set(bytesOfHex(key, 32, "pubkey"), 48);
+  return keccak256(input);
 }
 
 /** The bytes the wallet signs: the prefix, then the hash as 64 lowercase hex characters (85 bytes). */
@@ -218,6 +246,8 @@ interface ComposeV1Result {
   recentBlockhash: string;
   /** Base64 v1 wire with a zero signature slot. */
   transaction: string;
+  /** The id the proxy reports for this call: the authorization hash or the sender-bound id. Absent (or null) on older proxies. */
+  evmTxHash?: Hex | null;
 }
 
 /**
@@ -256,6 +286,7 @@ export interface TransactionReceiptLike {
   status?: Hex;
   blockNumber?: Hex;
   transactionHash?: Hex;
+  from?: Hex;
   [key: string]: unknown;
 }
 
@@ -317,7 +348,32 @@ async function prepare(deps: SolanaLaneV1Deps, call: V1Call) {
     value: call.value,
     data: call.data,
   });
-  return { fetchImpl, signer, from, rlp, hash: hexOf(authHashFor(rlp)) };
+  const hash = hexOf(authHashFor(rlp));
+  return { fetchImpl, signer, from, rlp, ids: [hash, evmTxIdFor(hash, signer.payer)] as const };
+}
+
+const sameHex = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const isOneOf = (h: string, ids: readonly Hex[]) => ids.some((id) => sameHex(id, h));
+
+/**
+ * Wait for the receipt of this wallet's call. A receipt counts only when it is
+ * from this wallet's synthetic sender and carries one of the two ids computed
+ * locally, so another wallet's receipt for the same payload is never taken as
+ * this one's. The returned `hash` is the receipt's own hash.
+ */
+async function awaitOwnReceipt(
+  deps: SolanaLaneV1Deps,
+  fetchImpl: typeof fetch,
+  polled: Hex,
+  from: Hex,
+  ids: readonly Hex[],
+): Promise<{ hash: Hex; receipt: TransactionReceiptLike | null }> {
+  const receipt = await waitForReceipt(deps.proxyUrl, polled, {
+    timeoutMs: deps.receiptTimeoutMs ?? 90_000,
+    fetchImpl,
+    accept: (r) => typeof r.from === "string" && sameHex(r.from, from) && typeof r.transactionHash === "string" && isOneOf(r.transactionHash, ids),
+  });
+  return { hash: (receipt?.transactionHash as Hex | undefined) ?? polled, receipt };
 }
 
 /**
@@ -337,7 +393,7 @@ export async function submitRomeTxV1(
   call: V1Call & { relayOnRefusal?: boolean },
 ): Promise<SolanaLaneV1Result> {
   const prepared = await prepare(deps, call);
-  const { fetchImpl, signer, from, rlp, hash } = prepared;
+  const { fetchImpl, signer, from, rlp, ids } = prepared;
   const authSig = await signer.signAuthHash(ed25519AuthMessage(authHashFor(rlp)));
 
   let composed: ComposeV1Result;
@@ -349,8 +405,13 @@ export async function submitRomeTxV1(
     return relayPrepared(deps, prepared, authSig);
   }
 
+  // Checked before the wallet signs: an id that is neither of ours means the answer is for another call.
+  if (composed.evmTxHash != null && !isOneOf(composed.evmTxHash, ids)) {
+    throw new Error(`rome_composeUnsignedAtomicV1: proxy answered evmTxHash ${composed.evmTxHash}, expected ${ids[0]} or ${ids[1]}`);
+  }
+  const polled = (composed.evmTxHash ?? ids[0]) as Hex;
   const signature = await signAndSend(deps, signer, decodeBase64(composed.transaction), { kind: "atomic", rlp });
-  const receipt = await waitForReceipt(deps.proxyUrl, hash, { timeoutMs: deps.receiptTimeoutMs ?? 90_000, fetchImpl });
+  const { hash, receipt } = await awaitOwnReceipt(deps, fetchImpl, polled, from, ids);
   return { hash, from, route: "atomic", signature, receipt };
 }
 
@@ -375,7 +436,7 @@ export async function relayV1(
 /** Send an already built payload and its authorization signature to the proxy's relay. */
 async function relayPrepared(
   deps: SolanaLaneV1Deps,
-  { fetchImpl, signer, from, rlp, hash }: Awaited<ReturnType<typeof prepare>>,
+  { fetchImpl, signer, from, rlp, ids }: Awaited<ReturnType<typeof prepare>>,
   authSig: Uint8Array,
 ): Promise<SolanaLaneV1Result> {
   const answered = await jsonRpc<Hex | null>(
@@ -385,11 +446,11 @@ async function relayPrepared(
     fetchImpl,
   );
   if (!answered) throw new Error("rome_relayUnsignedV1: empty result");
-  // The hash is fixed by the payload the wallet authorized; an answer for another transaction must not be reported as this one.
-  if (answered.toLowerCase() !== hash) {
-    throw new Error(`rome_relayUnsignedV1: relay answered ${answered}, expected ${hash} (the hash of the payload that was authorized)`);
+  // The id is fixed by the payload the wallet authorized (the authorization hash, or the id bound to this sender); an answer for another transaction must not be reported as this one.
+  if (!isOneOf(answered, ids)) {
+    throw new Error(`rome_relayUnsignedV1: relay answered ${answered}, expected ${ids[0]} or ${ids[1]} (the ids of the payload that was authorized)`);
   }
-  const receipt = await waitForReceipt(deps.proxyUrl, hash, { timeoutMs: deps.receiptTimeoutMs ?? 90_000, fetchImpl });
+  const { hash, receipt } = await awaitOwnReceipt(deps, fetchImpl, answered, from, ids);
   return { hash, from, route: "relay", receipt };
 }
 
@@ -645,11 +706,14 @@ function decodeBase64(s: string): Uint8Array {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
-/** Poll `eth_getTransactionReceipt` until it returns a receipt; `null` after `timeoutMs` (default 90 000). */
+/**
+ * Poll `eth_getTransactionReceipt` until it returns a receipt; `null` after `timeoutMs` (default 90 000).
+ * With `accept`, a receipt it refuses is treated as not yet landed and polling continues.
+ */
 export async function waitForReceipt(
   proxyUrl: string,
   hash: Hex,
-  opts: { timeoutMs?: number; intervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { timeoutMs?: number; intervalMs?: number; fetchImpl?: typeof fetch; accept?: (receipt: TransactionReceiptLike) => boolean } = {},
 ): Promise<TransactionReceiptLike | null> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const interval = opts.intervalMs ?? 1500;
@@ -657,7 +721,7 @@ export async function waitForReceipt(
   for (;;) {
     try {
       const receipt = await jsonRpc<TransactionReceiptLike | null>(proxyUrl, "eth_getTransactionReceipt", [hash], fetchImpl);
-      if (receipt) return receipt;
+      if (receipt && (opts.accept?.(receipt) ?? true)) return receipt;
     } catch {
       // a proxy that is briefly behind answers an error; keep polling until the deadline
     }
