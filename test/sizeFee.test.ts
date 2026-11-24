@@ -28,13 +28,18 @@ describe("sizeSolanaLaneFee", () => {
     expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl })).gasLimit).toBe(DEFAULT_ROME_GAS_FALLBACK);
   });
 
-  it("requireEstimate: a thrown estimate or exactly 21,000 stops with a clear error", async () => {
+  it("requireEstimate: a thrown estimate stops with a clear error", async () => {
     await expect(sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl, requireEstimate: true })).rejects.toBeInstanceOf(RomeEstimateUnavailableError);
-    await expect(sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x5208").fetchImpl, requireEstimate: true })).rejects.toThrow(/no usable gas estimate/);
+    await expect(sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl, requireEstimate: true })).rejects.toThrow(/no usable gas estimate/);
   });
 
-  it("requireEstimate: an explicit fallbackGas is used, a real estimate is padded", async () => {
-    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x5208").fetchImpl, requireEstimate: true, fallbackGas: 5_000_000n })).gasLimit).toBe(5_000_000n);
+  it("requireEstimate: 21,000 is a real estimate, padded", async () => {
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x5208").fetchImpl, requireEstimate: true })).gasLimit).toBe(27_300n);
+  });
+
+  it("requireEstimate: an explicit fallbackGas is used only when the estimate throws, a real estimate is padded", async () => {
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy(new Error("revert")).fetchImpl, requireEstimate: true, fallbackGas: 5_000_000n })).gasLimit).toBe(5_000_000n);
+    expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x5208").fetchImpl, requireEstimate: true, fallbackGas: 5_000_000n })).gasLimit).toBe(27_300n);
     expect((await sizeSolanaLaneFee("https://p.example/", CALL, { fetchImpl: proxy("0x64").fetchImpl, requireEstimate: true })).gasLimit).toBe(130n);
   });
 

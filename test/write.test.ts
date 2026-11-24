@@ -134,7 +134,7 @@ describe("submitRomeTx", () => {
     };
     const sent = (p: ReturnType<typeof mockProvider>) => p.calls.some((c) => c.method === "eth_sendTransaction");
 
-    it("the floor constant is Rome's 21,000 answer", () => {
+    it("the floor constant is the 21,000 floor of a successful emulation", () => {
       expect(ROME_ESTIMATE_FLOOR).toBe(21_000n);
     });
 
@@ -158,19 +158,20 @@ describe("submitRomeTx", () => {
       await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toThrow(/fallbackGas, or fee on the V1 lane/);
     });
 
-    it("an estimate of exactly 21,000 counts as no estimate", async () => {
+    it("an estimate of exactly 21,000 is a real estimate: padded and signed, never a stop", async () => {
       const p = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
-      await expect(submitRomeTx(p, { ...req, requireEstimate: true })).rejects.toThrow(/no usable gas estimate/);
-      expect(sent(p)).toBe(false);
+      await submitRomeTx(p, { ...req, requireEstimate: true });
+      expect(sent(p)).toBe(true);
+      expect(BigInt(sentTx(p).gas)).toBe(27_300n);
     });
 
-    it("an explicit fallbackGas is still used when the estimate is missing or 21,000", async () => {
+    it("an explicit fallbackGas is used only when the estimate throws; a 21,000 estimate beats it", async () => {
       const thrown = mockProvider({ ...base, eth_estimateGas: () => new Error("revert") });
       await submitRomeTx(thrown, { ...req, requireEstimate: true, fallbackGas: 0x1234n });
       expect(sentTx(thrown).gas).toBe("0x1234");
       const floor = mockProvider({ ...base, eth_estimateGas: () => "0x5208" });
       await submitRomeTx(floor, { ...req, requireEstimate: true, fallbackGas: 0x1234n });
-      expect(sentTx(floor).gas).toBe("0x1234");
+      expect(BigInt(sentTx(floor).gas)).toBe(27_300n);
     });
 
     it("a usable estimate beats fallbackGas, with or without requireEstimate", async () => {
@@ -191,7 +192,7 @@ describe("submitRomeTx", () => {
       expect(sent(q)).toBe(false);
     });
 
-    it("a real estimate is padded as always, and 21,001 is a real estimate", async () => {
+    it("a real estimate is padded as always, 21,000 and 21,001 included", async () => {
       const p = mockProvider({ ...base, eth_estimateGas: () => "0x64" });
       await submitRomeTx(p, { ...req, requireEstimate: true });
       expect(sentTx(p).gas).toBe("0x82");

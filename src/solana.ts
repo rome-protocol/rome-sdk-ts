@@ -249,8 +249,9 @@ export interface FeeFields {
  * or the v1 lane's atomic transaction: both ignore the limit)
  * but not on the relay route, which enforces the limit and, for a call it runs
  * iteratively, needs the sender's balance to cover limit x price. With `requireEstimate`, an estimate that
- * throws or is exactly 21,000 (Rome's answer when its emulation fails) stops
- * with `RomeEstimateUnavailableError` unless `fallbackGas` is given.
+ * throws (Rome answers a failed emulation with an error) stops with
+ * `RomeEstimateUnavailableError` unless `fallbackGas` is given. An answer of
+ * 21,000 is a real estimate (the floor of a successful emulation) and is padded.
  */
 export async function sizeSolanaLaneFee(
   rpcUrl: string,

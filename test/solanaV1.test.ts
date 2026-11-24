@@ -524,8 +524,8 @@ describe("submitRomeTxV1", () => {
       expect(proxy.of("eth_estimateGas")).toHaveLength(0);
     });
 
-    it("requireEstimate: no estimate stops before anything is signed or sent", async () => {
-      for (const estimate of [() => ({ error: { code: 3, message: "execution reverted" } }), () => "0x5208"]) {
+    it("requireEstimate: a thrown estimate stops before anything is signed or sent", async () => {
+      for (const estimate of [() => ({ error: { code: 3, message: "execution reverted" } })]) {
         const signer = spySigner();
         const { conn, asConnection } = fakeConnection();
         const proxy = stubProxy({
@@ -545,8 +545,8 @@ describe("submitRomeTxV1", () => {
       }
     });
 
-    it("relayV1 with requireEstimate: no estimate stops before anything is signed or relayed", async () => {
-      for (const estimate of [() => ({ error: { code: 3, message: "execution reverted" } }), () => "0x5208"]) {
+    it("relayV1 with requireEstimate: a thrown estimate stops before anything is signed or relayed", async () => {
+      for (const estimate of [() => ({ error: { code: 3, message: "execution reverted" } })]) {
         const signer = spySigner();
         const { conn, asConnection } = fakeConnection();
         const proxy = stubProxy({
@@ -562,6 +562,37 @@ describe("submitRomeTxV1", () => {
         expect(proxy.of("rome_relayUnsignedV1")).toHaveLength(0);
         expect(conn.sendRawTransaction).not.toHaveBeenCalled();
       }
+    });
+
+    it("requireEstimate: 21,000 is a real estimate, padded and relayed", async () => {
+      const signer = spySigner();
+      const { conn, asConnection } = fakeConnection();
+      const proxy = stubProxy({
+        eth_getTransactionCount: () => "0x4",
+        eth_estimateGas: () => "0x5208",
+        eth_getBlockByNumber: () => ({ baseFeePerGas: "0x5" }),
+        rome_composeUnsignedAtomicV1: refusal,
+        rome_relayUnsignedV1: relayAnswer,
+        eth_getTransactionReceipt: receiptHandler,
+      });
+      const res = await submitRomeTxV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, { to: TOKEN, data: "0xdeadbeef", requireEstimate: true });
+      expect(res.route).toBe("relay");
+      expect(conn.sendRawTransaction).not.toHaveBeenCalled();
+      expect(BigInt((fromRlp(proxy.of("rome_relayUnsignedV1")[0]!.params[0] as Hex, "hex") as string[])[4]!)).toBe(27_300n);
+    });
+
+    it("relayV1 with requireEstimate: 21,000 is a real estimate, padded and relayed", async () => {
+      const signer = spySigner();
+      const { asConnection } = fakeConnection();
+      const proxy = stubProxy({
+        eth_getTransactionCount: () => "0x4",
+        eth_estimateGas: () => "0x5208",
+        eth_getBlockByNumber: () => ({ baseFeePerGas: "0x5" }),
+        rome_relayUnsignedV1: relayAnswer,
+        eth_getTransactionReceipt: receiptHandler,
+      });
+      await relayV1({ connection: asConnection, proxyUrl: PROXY, programId: ROME_PROGRAM, chainId: CHAIN_ID, signer }, { to: TOKEN, data: "0xdeadbeef", requireEstimate: true });
+      expect(BigInt((fromRlp(proxy.of("rome_relayUnsignedV1")[0]!.params[0] as Hex, "hex") as string[])[4]!)).toBe(27_300n);
     });
 
     it("propagates the refusal when relayOnRefusal is false", async () => {
