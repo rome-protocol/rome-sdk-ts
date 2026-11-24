@@ -28,7 +28,9 @@ import { submitRomeTx } from "@rome-protocol/sdk";
 const hash = await submitRomeTx(provider, { from, to, data });
 ```
 
-`submitRomeTx` sizes gas from `eth_estimateGas` padded 1.3× (Rome's estimator undercounts Solana-CPI cost), falls back to an explicit ceiling when estimation reverts, and supplies standard EIP-1559 fee fields — so the wallet never shows "Network fee: Unavailable" and never under-gasses a CPI write. **Don't send Rome writes with raw `eth_sendTransaction` / wagmi `writeContract`.**
+Gas on Rome is the lamports the operator spends on Solana for the call, including the rent of every new account it creates (about a million gas to a never-used address, about ten thousand to an existing one); `eth_estimateGas` follows that cost, and Rome charges the gas used. `submitRomeTx` sizes the limit from the estimate padded 1.3×, which covers the gap between the estimate and the send (an account created, a price moved), falls back to an explicit ceiling when estimation reverts, and supplies standard EIP-1559 fee fields — so the wallet never shows "Network fee: Unavailable" and never under-gasses a CPI write. The limit **is enforced** on a signed send and on the relay route (a cost above it fails with `InsufficientGas`, and the sender's balance must cover limit × price); only a Solana wallet's one-signature transaction ignores it. So a fixed ceiling is a last resort, not free.
+
+Rome answers an estimate of exactly 21,000 when its emulation fails, and also for a call that really costs that little, so the SDK cannot tell the two apart and pads either. For a call you know creates accounts or writes state, pass `requireEstimate: true` (`submitRomeTx`, `submitRomeTxV1`, `relayV1`, `sizeSolanaLaneFee`): a thrown estimate or an answer of 21,000 then counts as no estimate, and the call stops with `RomeEstimateUnavailableError` before anything is signed, instead of signing the fixed 250M ceiling. An explicit `fallbackGas` still wins. **Don't send Rome writes with raw `eth_sendTransaction` / wagmi `writeContract`.**
 
 ## Calling a Solana program from your EVM app (CPI)
 
@@ -201,7 +203,8 @@ const { proof } = await api.proof(message.id);            // claimMessage's argu
 | Export | What |
 |---|---|
 | `submitRomeTx(provider, tx)` | the canonical Rome EVM write path (gas + fee handled) |
-| `padRomeGas` / `romeWriteGas` / `buildRome1559Fees` / `romeFeeFields` | the fee/gas primitives it uses |
+| `padRomeGas` / `romeWriteGas` / `sizeFromEstimate` / `buildRome1559Fees` / `romeFeeFields` | the fee/gas primitives it uses |
+| `RomeEstimateUnavailableError` / `ROME_ESTIMATE_FLOOR` | thrown by a `requireEstimate` call that has no usable estimate / Rome's 21,000 failure answer |
 | `deriveAuthorityPda` / `deriveAta` / `deriveUserAta` / `pubkeyToBytes32` | PDA + ATA derivation |
 | `encodeInvoke` / `encodeInvokeSigned` / `CPI_PRECOMPILE` | CPI calldata encoders |
 | `u64Le` / `u8` | little-endian primitives for inner Solana instruction data |

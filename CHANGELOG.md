@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gas: a call can require a real estimate. `submitRomeTx`, `submitRomeTxV1`, `relayV1` and `sizeSolanaLaneFee` take `requireEstimate: true`: a thrown `eth_estimateGas`, or an answer of exactly 21,000 (Rome's answer when its emulation fails), counts as no estimate and the call stops with `RomeEstimateUnavailableError` before anything is signed, instead of signing the fixed 250M ceiling. An explicit `fallbackGas` still wins. Default is off, so nothing changes for a caller that does not pass it. New exports: `RomeEstimateUnavailableError`, `ROME_ESTIMATE_FLOOR`, `sizeFromEstimate`.
+- Docs: the `write.ts` header, the README and AGENTS.md now say what gas is on Rome (the call's Solana cost, new accounts included; the estimate follows it; the 1.3x pad covers the estimate-to-send gap) and that the limit is enforced on a signed send and on the relay route, so over-provisioning is not free there.
 - A message to the zero address is refused: `encodeBridgeMessage`, `encodeBridgeMessageWETH`, `sendMessageFromEvm`, `sendMessageFromSolanaWallet` and the API client's `sendStep` (a zero `receiver`) throw before anything is built or sent.
 
 ## 0.6.0
