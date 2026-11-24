@@ -319,7 +319,21 @@ export interface SolanaLaneV1Result {
   receipt: TransactionReceiptLike | null;
 }
 
-type V1Call = EvmCall & { nonce?: bigint; fee?: FeeFields };
+type V1Call = EvmCall & {
+  nonce?: bigint;
+  fee?: FeeFields;
+  /**
+   * The call needs a real gas estimate. Set it only for a call known to create at
+   * least one new account, so its real cost is far above 21,000; a write that
+   * creates nothing (a role change, a pause, a repeat grant) legitimately
+   * estimates 21,000 and must not set it. With no estimate (it throws, or is
+   * exactly 21,000, Rome's answer when its emulation fails) the call stops with
+   * `RomeEstimateUnavailableError` before anything is signed, instead of signing
+   * the fixed ceiling. The same payload can be relayed, and the relay route
+   * enforces the limit. Ignored when `fee` is given. Default false.
+   */
+  requireEstimate?: boolean;
+};
 
 const toHex = (n: bigint): Hex => `0x${n.toString(16)}`;
 const hexOf = (b: Uint8Array): Hex => `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
@@ -336,7 +350,7 @@ async function prepare(deps: SolanaLaneV1Deps, call: V1Call) {
     (await sizeSolanaLaneFee(
       deps.proxyUrl,
       { from, to: call.to, data: call.data, value: call.value !== undefined ? toHex(call.value) : undefined },
-      { fetchImpl },
+      { fetchImpl, requireEstimate: call.requireEstimate },
     ));
   const rlp = buildUnsignedEip1559Rlp({
     chainId: deps.chainId,

@@ -31,7 +31,7 @@ import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAd
 import { keccak256, serializeTransaction, hexToBytes, encodeFunctionData, type Hex } from "viem";
 import { DO_TX_UNSIGNED_TAG, ACTIVATE_ATA_TAG } from "./constants.js";
 import { deriveAuthorityPda, pubkeyToBytes32 } from "./pda.js";
-import { padRomeGas, buildRome1559Fees, DEFAULT_ROME_GAS_FALLBACK } from "./write.js";
+import { sizeFromEstimate, buildRome1559Fees } from "./write.js";
 import { jsonRpc } from "./jsonRpc.js";
 
 function pk(programId: PublicKey | string): PublicKey {
@@ -244,14 +244,21 @@ export interface FeeFields {
  * Size `gasLimit` + EIP-1559 fees for a Solana-lane call via the Rome proxy's
  * EVM JSON-RPC — mirrors `submitRomeTx`: a padded `eth_estimateGas` (1.3×) with
  * a fallback ceiling on revert, plus real base + tip fee fields.
+ *
+ * The ceiling is harmless on a transaction with no fee recipient (a DoTxUnsigned,
+ * or the v1 lane's atomic transaction: both ignore the limit)
+ * but not on the relay route, which enforces the limit and, for a call it runs
+ * iteratively, needs the sender's balance to cover limit x price. With `requireEstimate`, an estimate that
+ * throws or is exactly 21,000 (Rome's answer when its emulation fails) stops
+ * with `RomeEstimateUnavailableError` unless `fallbackGas` is given.
  */
 export async function sizeSolanaLaneFee(
   rpcUrl: string,
   call: DiscoveryCall,
-  opts: { fallbackGas?: bigint; fetchImpl?: typeof fetch } = {},
+  opts: { fallbackGas?: bigint; requireEstimate?: boolean; fetchImpl?: typeof fetch } = {},
 ): Promise<FeeFields> {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  let gasLimit: bigint;
+  let estimate: bigint | undefined;
   try {
     const est = await jsonRpc<Hex>(
       rpcUrl,
@@ -259,10 +266,11 @@ export async function sizeSolanaLaneFee(
       [{ from: call.from, to: call.to, data: call.data ?? "0x", ...(call.value ? { value: call.value } : {}) }],
       fetchImpl,
     );
-    gasLimit = padRomeGas(BigInt(est));
+    estimate = BigInt(est);
   } catch {
-    gasLimit = opts.fallbackGas ?? DEFAULT_ROME_GAS_FALLBACK;
+    estimate = undefined;
   }
+  const gasLimit = sizeFromEstimate(estimate, { requireEstimate: opts.requireEstimate, fallbackGas: opts.fallbackGas });
   let baseFeePerGas: bigint | undefined;
   let suggestedPriorityFee: bigint | undefined;
   let gasPrice: bigint | undefined;
